@@ -19,7 +19,7 @@ import java.util.stream.Stream;
 import static io.restassured.RestAssured.given;
 
 // Кейсы для перевода денег: POST /api/v1/accounts/transfer
-public class MoneyTransferTest2 extends BaseTest {
+public class MoneyTransferTest extends BaseTest {
 
     // Бизнес-константы
     private static final BigDecimal MIN_TRANSFER = new BigDecimal("0.01");
