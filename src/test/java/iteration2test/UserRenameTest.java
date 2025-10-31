@@ -1,653 +1,180 @@
 package iteration2test;
 
-import io.restassured.RestAssured;
-import io.restassured.filter.log.RequestLoggingFilter;
-import io.restassured.filter.log.ResponseLoggingFilter;
-import io.restassured.http.ContentType;
-import org.apache.http.HttpStatus;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Test;
+import generators.RandomData;
+import models.CreateUserRequest;
+import models.UpdateProfileRequest;
+import models.UpdateProfileResponse;
+import models.UserRole;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import requests.AdminCreateUserRequester;
+import specs.RequestSpecs;
+import specs.ResponseSpecs;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Stream;
 
 import static io.restassured.RestAssured.given;
 
-public class UserRenameTest {
-    @BeforeAll
-    public static void setupRestAssured() {
-        RestAssured.filters(
-                List.of(new RequestLoggingFilter(),
-                        new ResponseLoggingFilter())
+// Кейсы для изменения имени в профиле: PUT /api/v1/customer/profile
+public class UserRenameTest extends BaseTest {
+
+    private String username;
+    private String password;
+
+    @BeforeEach
+    @DisplayName("Предусловие: создан пользователь с ролью USER")
+    void initUser() {
+        username = RandomData.getUsername();
+        password = RandomData.getPassword();
+
+        new AdminCreateUserRequester(
+                RequestSpecs.adminSpec(),
+                ResponseSpecs.entityWasCreated()
+        ).post(CreateUserRequest.builder()
+                .username(username)
+                .password(password)
+                .role(UserRole.USER)
+                .build());
+    }
+
+    // Позитивные кейсы:
+    static Stream<String> validNames() {
+        return Stream.of(
+                "john smith",
+                "john Smith",
+                "John smith",
+                "John Smith",
+                "JOHN smith",
+                "john SMITH",
+                "JOHN SMITH",
+                "maria Ivanova",
+                "ALpha Beta",
+                "alpha BETA",
+                "ALPHA beta",
+                "bruce Wayne",
+                "Peter parker",
+                "PeTeR PaRkEr",
+                "longname Longname"
         );
     }
 
-    @Test
-    public void userCanSetValidFullName() {
+    @ParameterizedTest
+    @MethodSource("validNames")
+    @DisplayName("Позитив: валидные значения name")
+    void userCanSetValidFullName(String newName) {
+        var userSpec = RequestSpecs.authAsUser(username, password);
 
-        UserCredentials creds = TestDataFactory.generateUser();
-        String username = creds.getUsername();
-        String password = creds.getPassword();
-
-        // 1 создаём юзера под админом
-        given()
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .header("Authorization", "Basic YWRtaW46YWRtaW4=") // admin:admin
-                .body("""
-                        {
-                          "username": "%s",
-                          "password": "%s",
-                          "role": "USER"
-                        }
-                        """.formatted(username, password))
-                .when()
-                .post("http://localhost:4111/api/v1/admin/users")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_CREATED);
-
-        // 2 логинимся юзером, забираем токен
-        String userAuthHeader =
-                given()
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .body("""
-                                {
-                                  "username": "%s",
-                                  "password": "%s"
-                                }
-                                """.formatted(username, password))
+        UpdateProfileResponse resp =
+                given().spec(userSpec)
+                        .body(new UpdateProfileRequest(newName))
                         .when()
-                        .post("http://localhost:4111/api/v1/auth/login")
+                        .put("/api/v1/customer/profile")
                         .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_OK)
+                        .spec(ResponseSpecs.requestReturnsOK())
                         .extract()
-                        .header("Authorization");
+                        .as(UpdateProfileResponse.class);
 
-
-        // 3 меняем имя юзера
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "name": "Johnswd Smith"
-                        }
-                        """)
-                .when()
-                .put("http://localhost:4111/api/v1/customer/profile")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_OK);
-
+        softly.assertThat(resp.getMessage()).isEqualTo("Profile updated successfully");
+        softly.assertThat(resp.getCustomer().getUsername()).isEqualTo(username);
+        softly.assertThat(resp.getCustomer().getName()).isEqualTo(newName);
+        softly.assertThat(resp.getCustomer().getRole()).isEqualTo("USER");
     }
 
-    @Test
-    public void userCannotSetOneLongWord() {
-
-        UserCredentials creds = TestDataFactory.generateUser();
-        String username = creds.getUsername();
-        String password = creds.getPassword();
-
-        // 1 создаём юзера под админом
-        given()
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .header("Authorization", "Basic YWRtaW46YWRtaW4=") // admin:admin
-                .body("""
-                        {
-                          "username": "%s",
-                          "password": "%s",
-                          "role": "USER"
-                        }
-                        """.formatted(username, password))
-                .when()
-                .post("http://localhost:4111/api/v1/admin/users")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_CREATED);
-
-        // 2 логинимся юзером, забираем токен
-        String userAuthHeader =
-                given()
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .body("""
-                                {
-                                  "username": "%s",
-                                  "password": "%s"
-                                }
-                                """.formatted(username, password))
-                        .when()
-                        .post("http://localhost:4111/api/v1/auth/login")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_OK)
-                        .extract()
-                        .header("Authorization");
-
-
-        // 3 меняем имя юзера
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "name": "Johnswdsmiiith"
-                        }
-                        """)
-                .when()
-                .put("http://localhost:4111/api/v1/customer/profile")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_BAD_REQUEST);
-
+    // Негативные кейсы:
+    static Stream<String> invalidNames() {
+        return Stream.of(
+                "",
+                " ",
+                "   ",
+                "John",
+                "John  Smith",
+                " John Smith",
+                "John Smith ",
+                "John  ",
+                "  Smith",
+                "John  Michael Smith",
+                "John-Smith",
+                "John_Smith",
+                "John Smith Jr",
+                "J0hn Smith",
+                "John Sm1th",
+                "John Sm!th",
+                "John Smi th",
+                "Jo hn Smith",
+                "John  Smith  ",
+                "123 456",
+                "JohnSmith",
+                "John  ",
+                "  John   Smith  "
+        );
     }
 
-    @Test
-    public void userCanSetShortNames() {
+    @ParameterizedTest
+    @MethodSource("invalidNames")
+    @DisplayName("Негатив: невалидные строки name")
+    void userCannotSetInvalidFullName(String invalidName) {
+        var userSpec = RequestSpecs.authAsUser(username, password);
 
-        UserCredentials creds = TestDataFactory.generateUser();
-        String username = creds.getUsername();
-        String password = creds.getPassword();
-
-        // 1 создаём юзера под админом
-        given()
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .header("Authorization", "Basic YWRtaW46YWRtaW4=") // admin:admin
-                .body("""
-                        {
-                          "username": "%s",
-                          "password": "%s",
-                          "role": "USER"
-                        }
-                        """.formatted(username, password))
+        given().spec(userSpec)
+                .body(new UpdateProfileRequest(invalidName))
                 .when()
-                .post("http://localhost:4111/api/v1/admin/users")
+                .put("/api/v1/customer/profile")
                 .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_CREATED);
-
-        // 2 логинимся юзером, забираем токен
-        String userAuthHeader =
-                given()
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .body("""
-                                {
-                                  "username": "%s",
-                                  "password": "%s"
-                                }
-                                """.formatted(username, password))
-                        .when()
-                        .post("http://localhost:4111/api/v1/auth/login")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_OK)
-                        .extract()
-                        .header("Authorization");
-
-
-        // 3 меняем имя юзера
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "name": "J W"
-                        }
-                        """)
-                .when()
-                .put("http://localhost:4111/api/v1/customer/profile")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_OK);
-
+                .statusCode(400);
     }
 
-    @Test
-    public void userCannotSetOnlySpaces() {
+    // Негативные кейсы: валидация поля name
+    static Stream<Object> invalidBodies() {
+        // name = null
+        Map<String, Object> nameNull = new HashMap<>();
+        nameNull.put("name", null);
 
-        UserCredentials creds = TestDataFactory.generateUser();
-        String username = creds.getUsername();
-        String password = creds.getPassword();
+        // name = число
+        Map<String, Object> nameNumber = new HashMap<>();
+        nameNumber.put("name", 12345);
 
-        // 1 создаём юзера под админом
-        given()
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .header("Authorization", "Basic YWRtaW46YWRtaW4=") // admin:admin
-                .body("""
-                        {
-                          "username": "%s",
-                          "password": "%s",
-                          "role": "USER"
-                        }
-                        """.formatted(username, password))
-                .when()
-                .post("http://localhost:4111/api/v1/admin/users")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_CREATED);
+        // name = булево
+        Map<String, Object> nameBool = new HashMap<>();
+        nameBool.put("name", true);
 
-        // 2 логинимся юзером, забираем токен
-        String userAuthHeader =
-                given()
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .body("""
-                                {
-                                  "username": "%s",
-                                  "password": "%s"
-                                }
-                                """.formatted(username, password))
-                        .when()
-                        .post("http://localhost:4111/api/v1/auth/login")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_OK)
-                        .extract()
-                        .header("Authorization");
+        // name = массив
+        Map<String, Object> nameArray = new HashMap<>();
+        nameArray.put("name", List.of("John", "Smith"));
+
+        // name = объект
+        Map<String, Object> nameObject = new HashMap<>();
+        nameObject.put("name", Map.of("first", "John", "last", "Smith"));
 
 
-        // 3 меняем имя юзера
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "name": "     "
-                        }
-                        """)
-                .when()
-                .put("http://localhost:4111/api/v1/customer/profile")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_BAD_REQUEST);
+        // сырой "null" (JSON literal), если сервер обрабатывает тело как null
+        String rawJsonNull = "null";
 
+        return Stream.of(
+                nameNull,
+                nameNumber,
+                nameBool,
+                nameArray,
+                nameObject,
+                rawJsonNull
+        );
     }
 
-    @Test
-    public void userCanUseWordNull() {
+    @ParameterizedTest
+    @MethodSource("invalidBodies")
+    @DisplayName("Негатив: невалидный payload (тип/структура)")
+    void userCannotSetInvalidFullNameByPayload(Object body) {
+        var userSpec = RequestSpecs.authAsUser(username, password);
 
-        UserCredentials creds = TestDataFactory.generateUser();
-        String username = creds.getUsername();
-        String password = creds.getPassword();
-
-        // 1 создаём юзера под админом
-        given()
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .header("Authorization", "Basic YWRtaW46YWRtaW4=") // admin:admin
-                .body("""
-                        {
-                          "username": "%s",
-                          "password": "%s",
-                          "role": "USER"
-                        }
-                        """.formatted(username, password))
+        given().spec(userSpec)
+                .body(body)
                 .when()
-                .post("http://localhost:4111/api/v1/admin/users")
+                .put("/api/v1/customer/profile")
                 .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_CREATED);
-
-        // 2 логинимся юзером, забираем токен
-        String userAuthHeader =
-                given()
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .body("""
-                                {
-                                  "username": "%s",
-                                  "password": "%s"
-                                }
-                                """.formatted(username, password))
-                        .when()
-                        .post("http://localhost:4111/api/v1/auth/login")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_OK)
-                        .extract()
-                        .header("Authorization");
-
-
-        // 3 меняем имя юзера
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "name": "Null Null"
-                        }
-                        """)
-                .when()
-                .put("http://localhost:4111/api/v1/customer/profile")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_OK);
-
-    }
-
-    @Test
-    public void userCanUseLowercaseWords() {
-
-        UserCredentials creds = TestDataFactory.generateUser();
-        String username = creds.getUsername();
-        String password = creds.getPassword();
-
-        // 1 создаём юзера под админом
-        given()
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .header("Authorization", "Basic YWRtaW46YWRtaW4=") // admin:admin
-                .body("""
-                        {
-                          "username": "%s",
-                          "password": "%s",
-                          "role": "USER"
-                        }
-                        """.formatted(username, password))
-                .when()
-                .post("http://localhost:4111/api/v1/admin/users")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_CREATED);
-
-        // 2 логинимся юзером, забираем токен
-        String userAuthHeader =
-                given()
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .body("""
-                                {
-                                  "username": "%s",
-                                  "password": "%s"
-                                }
-                                """.formatted(username, password))
-                        .when()
-                        .post("http://localhost:4111/api/v1/auth/login")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_OK)
-                        .extract()
-                        .header("Authorization");
-
-
-        // 3 меняем имя юзера
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "name": "kohnswd imiiith"
-                        }
-                        """)
-                .when()
-                .put("http://localhost:4111/api/v1/customer/profile")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_OK);
-
-    }
-
-    @Test
-    public void userCannotUseDigitsOnly() {
-
-        UserCredentials creds = TestDataFactory.generateUser();
-        String username = creds.getUsername();
-        String password = creds.getPassword();
-
-        // 1 создаём юзера под админом
-        given()
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .header("Authorization", "Basic YWRtaW46YWRtaW4=") // admin:admin
-                .body("""
-                        {
-                          "username": "%s",
-                          "password": "%s",
-                          "role": "USER"
-                        }
-                        """.formatted(username, password))
-                .when()
-                .post("http://localhost:4111/api/v1/admin/users")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_CREATED);
-
-        // 2 логинимся юзером, забираем токен
-        String userAuthHeader =
-                given()
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .body("""
-                                {
-                                  "username": "%s",
-                                  "password": "%s"
-                                }
-                                """.formatted(username, password))
-                        .when()
-                        .post("http://localhost:4111/api/v1/auth/login")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_OK)
-                        .extract()
-                        .header("Authorization");
-
-
-        // 3 меняем имя юзера
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "name": "123 5343"
-                        }
-                        """)
-                .when()
-                .put("http://localhost:4111/api/v1/customer/profile")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_BAD_REQUEST);
-
-    }
-
-    @Test
-    public void userCannotUseLettersAndDigitsMixed() {
-
-        UserCredentials creds = TestDataFactory.generateUser();
-        String username = creds.getUsername();
-        String password = creds.getPassword();
-
-        // 1 создаём юзера под админом
-        given()
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .header("Authorization", "Basic YWRtaW46YWRtaW4=") // admin:admin
-                .body("""
-                        {
-                          "username": "%s",
-                          "password": "%s",
-                          "role": "USER"
-                        }
-                        """.formatted(username, password))
-                .when()
-                .post("http://localhost:4111/api/v1/admin/users")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_CREATED);
-
-        // 2 логинимся юзером, забираем токен
-        String userAuthHeader =
-                given()
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .body("""
-                                {
-                                  "username": "%s",
-                                  "password": "%s"
-                                }
-                                """.formatted(username, password))
-                        .when()
-                        .post("http://localhost:4111/api/v1/auth/login")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_OK)
-                        .extract()
-                        .header("Authorization");
-
-
-        // 3 меняем имя юзера
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "name": "Johnswd1 Smiiith2"
-                        }
-                        """)
-                .when()
-                .put("http://localhost:4111/api/v1/customer/profile")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_BAD_REQUEST);
-
-    }
-
-    @Test
-    public void userCannotSetThreeWordName() {
-
-        UserCredentials creds = TestDataFactory.generateUser();
-        String username = creds.getUsername();
-        String password = creds.getPassword();
-
-        // 1 создаём юзера под админом
-        given()
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .header("Authorization", "Basic YWRtaW46YWRtaW4=") // admin:admin
-                .body("""
-                        {
-                          "username": "%s",
-                          "password": "%s",
-                          "role": "USER"
-                        }
-                        """.formatted(username, password))
-                .when()
-                .post("http://localhost:4111/api/v1/admin/users")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_CREATED);
-
-        // 2 логинимся юзером, забираем токен
-        String userAuthHeader =
-                given()
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .body("""
-                                {
-                                  "username": "%s",
-                                  "password": "%s"
-                                }
-                                """.formatted(username, password))
-                        .when()
-                        .post("http://localhost:4111/api/v1/auth/login")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_OK)
-                        .extract()
-                        .header("Authorization");
-
-
-        // 3 меняем имя юзера
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "name": "John Van Smith"
-                        }
-                        """)
-                .when()
-                .put("http://localhost:4111/api/v1/customer/profile")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_BAD_REQUEST);
-
-    }
-
-    @Test
-    public void userCannotSetEmptyName() {
-
-        UserCredentials creds = TestDataFactory.generateUser();
-        String username = creds.getUsername();
-        String password = creds.getPassword();
-
-        // 1 создаём юзера под админом
-        given()
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .header("Authorization", "Basic YWRtaW46YWRtaW4=") // admin:admin
-                .body("""
-                        {
-                          "username": "%s",
-                          "password": "%s",
-                          "role": "USER"
-                        }
-                        """.formatted(username, password))
-                .when()
-                .post("http://localhost:4111/api/v1/admin/users")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_CREATED);
-
-        // 2 логинимся юзером, забираем токен
-        String userAuthHeader =
-                given()
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .body("""
-                                {
-                                  "username": "%s",
-                                  "password": "%s"
-                                }
-                                """.formatted(username, password))
-                        .when()
-                        .post("http://localhost:4111/api/v1/auth/login")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_OK)
-                        .extract()
-                        .header("Authorization");
-
-
-        // 3 меняем имя юзера
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "name": ""
-                        }
-                        """)
-                .when()
-                .put("http://localhost:4111/api/v1/customer/profile")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_BAD_REQUEST);
-
+                .statusCode(400);
     }
 }
