@@ -1,15 +1,18 @@
 package iteration2test;
 
 import generators.RandomData;
+import io.restassured.builder.ResponseSpecBuilder;
 import models.CreateUserRequest;
 import models.UpdateProfileRequest;
 import models.UpdateProfileResponse;
 import models.UserRole;
+import org.apache.http.HttpStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import requests.AdminCreateUserRequester;
+import requests.UpdateProfileRequester;
 import specs.RequestSpecs;
 import specs.ResponseSpecs;
 
@@ -17,8 +20,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
-
-import static io.restassured.RestAssured.given;
 
 // Кейсы для изменения имени в профиле: PUT /api/v1/customer/profile
 public class UserRenameTest extends BaseTest {
@@ -70,12 +71,8 @@ public class UserRenameTest extends BaseTest {
         var userSpec = RequestSpecs.authAsUser(username, password);
 
         UpdateProfileResponse resp =
-                given().spec(userSpec)
-                        .body(new UpdateProfileRequest(newName))
-                        .when()
-                        .put("/api/v1/customer/profile")
-                        .then()
-                        .spec(ResponseSpecs.requestReturnsOK())
+                new UpdateProfileRequester(userSpec, ResponseSpecs.requestReturnsOK())
+                        .post(new UpdateProfileRequest(newName))
                         .extract()
                         .as(UpdateProfileResponse.class);
 
@@ -120,12 +117,10 @@ public class UserRenameTest extends BaseTest {
     void userCannotSetInvalidFullName(String invalidName) {
         var userSpec = RequestSpecs.authAsUser(username, password);
 
-        given().spec(userSpec)
-                .body(new UpdateProfileRequest(invalidName))
-                .when()
-                .put("/api/v1/customer/profile")
-                .then()
-                .statusCode(400);
+        new UpdateProfileRequester(
+                userSpec,
+                new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_BAD_REQUEST).build()
+        ).post(new UpdateProfileRequest(invalidName));
     }
 
     // Негативные кейсы: валидация поля name
@@ -150,7 +145,6 @@ public class UserRenameTest extends BaseTest {
         Map<String, Object> nameObject = new HashMap<>();
         nameObject.put("name", Map.of("first", "John", "last", "Smith"));
 
-
         // сырой "null" (JSON literal), если сервер обрабатывает тело как null
         String rawJsonNull = "null";
 
@@ -170,11 +164,9 @@ public class UserRenameTest extends BaseTest {
     void userCannotSetInvalidFullNameByPayload(Object body) {
         var userSpec = RequestSpecs.authAsUser(username, password);
 
-        given().spec(userSpec)
-                .body(body)
-                .when()
-                .put("/api/v1/customer/profile")
-                .then()
-                .statusCode(400);
+        new UpdateProfileRequester(
+                userSpec,
+                new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_BAD_REQUEST).build()
+        ).postRaw(body);
     }
 }

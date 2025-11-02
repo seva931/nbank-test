@@ -1,16 +1,20 @@
 package iteration2test;
 
 import generators.RandomData;
+import io.restassured.builder.ResponseSpecBuilder;
 import models.AccountResponse;
 import models.CreateUserRequest;
 import models.DepositRequest;
 import models.UserRole;
+import org.apache.http.HttpStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import requests.AdminCreateUserRequester;
+import requests.CreateAccountRequester;
+import requests.DepositRequester;
 import specs.RequestSpecs;
 import specs.ResponseSpecs;
 
@@ -19,10 +23,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
-
-import static io.restassured.RestAssured.given;
-import static org.hamcrest.Matchers.anyOf;
-import static org.hamcrest.Matchers.is;
 
 // Кейсы для депозита счета: POST /api/v1/accounts/deposit
 public class DepositTest extends BaseTest {
@@ -55,12 +55,7 @@ public class DepositTest extends BaseTest {
         var userSpec = RequestSpecs.authAsUser(username, password);
 
         // 3) создаём счёт и берём id
-        AccountResponse acc = given().spec(userSpec)
-                .when().post("/api/v1/accounts")
-                .then().spec(ResponseSpecs.entityWasCreated())
-                .extract().as(AccountResponse.class);
-
-        accountId = acc.getId();
+        accountId = createAccount(userSpec);
     }
 
     // Позитивные кейсы
@@ -81,19 +76,14 @@ public class DepositTest extends BaseTest {
     void depositValidAmounts(String amountStr) {
         var userSpec = RequestSpecs.authAsUser(username, password);
 
-        given().spec(userSpec)
-                .body(new DepositRequest(accountId, new BigDecimal(amountStr)))
-                .when()
-                .post("/api/v1/accounts/deposit")
-                .then()
-                .statusCode(anyOf(is(200)));
+        new DepositRequester(userSpec, ResponseSpecs.requestReturnsOK())
+                .post(new DepositRequest(accountId, new BigDecimal(amountStr)));
     }
 
     // Вспомогательный метод: создать счёт и вернуть его id
     private Long createAccount(io.restassured.specification.RequestSpecification userSpec) {
-        AccountResponse acc = given().spec(userSpec)
-                .when().post("/api/v1/accounts")
-                .then().spec(ResponseSpecs.entityWasCreated())
+        AccountResponse acc = new CreateAccountRequester(userSpec, ResponseSpecs.entityWasCreated())
+                .post(null)
                 .extract().as(AccountResponse.class);
         return acc.getId();
     }
@@ -105,12 +95,8 @@ public class DepositTest extends BaseTest {
         Long firstAccountId = createAccount(userSpec);
         Long secondAccountId = createAccount(userSpec);
 
-        given().spec(userSpec)
-                .body(new DepositRequest(secondAccountId, new BigDecimal("10.00")))
-                .when()
-                .post("/api/v1/accounts/deposit")
-                .then()
-                .statusCode(anyOf(is(200)));
+        new DepositRequester(userSpec, ResponseSpecs.requestReturnsOK())
+                .post(new DepositRequest(secondAccountId, new BigDecimal("10.00")));
     }
 
     @Test
@@ -120,19 +106,9 @@ public class DepositTest extends BaseTest {
         Long firstAccountId = createAccount(userSpec);
         Long secondAccountId = createAccount(userSpec);
 
-        given().spec(userSpec)
-                .body(new DepositRequest(firstAccountId, new BigDecimal("5.00")))
-                .when()
-                .post("/api/v1/accounts/deposit")
-                .then()
-                .statusCode(anyOf(is(200), is(201)));
-
-        given().spec(userSpec)
-                .body(new DepositRequest(secondAccountId, new BigDecimal("7.50")))
-                .when()
-                .post("/api/v1/accounts/deposit")
-                .then()
-                .statusCode(anyOf(is(200)));
+        var depositRequester = new DepositRequester(userSpec, ResponseSpecs.requestReturnsOK());
+        depositRequester.post(new DepositRequest(firstAccountId, new BigDecimal("5.00")));
+        depositRequester.post(new DepositRequest(secondAccountId, new BigDecimal("7.50")));
     }
 
     // Негативные кейсы:
@@ -152,12 +128,10 @@ public class DepositTest extends BaseTest {
         var userSpec = RequestSpecs.authAsUser(username, password);
         Long accountId = createAccount(userSpec);
 
-        given().spec(userSpec)
-                .body(new DepositRequest(accountId, new BigDecimal(badAmount)))
-                .when()
-                .post("/api/v1/accounts/deposit")
-                .then()
-                .statusCode(400);
+        new DepositRequester(
+                userSpec,
+                new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_BAD_REQUEST).build()
+        ).post(new DepositRequest(accountId, new BigDecimal(badAmount)));
     }
 
     // Невалидные payload
@@ -227,12 +201,10 @@ public class DepositTest extends BaseTest {
             ((Map<String, Object>) map).put("id", accountId);
         }
 
-        given().spec(userSpec)
-                .body(body)
-                .when()
-                .post("/api/v1/accounts/deposit")
-                .then()
-                .statusCode(400);
+        new DepositRequester(
+                userSpec,
+                new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_BAD_REQUEST).build()
+        ).postRaw(body);
     }
 
     @Test
@@ -250,12 +222,10 @@ public class DepositTest extends BaseTest {
 
         var userSpec = RequestSpecs.authAsUser(username, password);
 
-        given().spec(userSpec)
-                .body(new DepositRequest(foreignAccountId, new BigDecimal("10")))
-                .when()
-                .post("/api/v1/accounts/deposit")
-                .then()
-                .statusCode(403);
+        new DepositRequester(
+                userSpec,
+                new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_FORBIDDEN).build()
+        ).post(new DepositRequest(foreignAccountId, new BigDecimal("10")));
     }
 
     @Test
@@ -265,15 +235,13 @@ public class DepositTest extends BaseTest {
         Long accountId = createAccount(userSpec);
         long nonexistentId = accountId + 999_999L;
 
-        given().spec(userSpec)
-                .body(new DepositRequest(nonexistentId, new BigDecimal("10")))
-                .when()
-                .post("/api/v1/accounts/deposit")
-                .then()
-                .statusCode(403);
+        new DepositRequester(
+                userSpec,
+                new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_FORBIDDEN).build()
+        ).post(new DepositRequest(nonexistentId, new BigDecimal("10")));
     }
 
-    //Используется в негативных тестах, чтобы передавать любые типы
+    // Используется в негативных тестах, чтобы передавать любые типы
     private static Map<String, Object> map(Object id, Object balance) {
         Map<String, Object> m = new HashMap<>();
         m.put("id", id);
