@@ -1,20 +1,20 @@
 package iteration2test;
 
-import generators.RandomData;
 import io.restassured.builder.ResponseSpecBuilder;
+import io.restassured.http.ContentType;
 import models.AccountResponse;
 import models.CreateUserRequest;
 import models.DepositRequest;
-import models.UserRole;
 import org.apache.http.HttpStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
-import requests.AdminCreateUserRequester;
-import requests.CreateAccountRequester;
-import requests.DepositRequester;
+import requests.skelethon.Endpoint;
+import requests.skelethon.requester.CrudRequester;
+import requests.steps.AccountSteps;
+import requests.steps.AdminSteps;
 import specs.RequestSpecs;
 import specs.ResponseSpecs;
 
@@ -24,119 +24,135 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
+import static io.restassured.RestAssured.given;
+import static models.comparison.ModelAssertions.assertThatModels;
+
 // Кейсы для депозита счета: POST /api/v1/accounts/deposit
+
 public class DepositTest extends BaseTest {
 
     // Бизнес-константы
     private static final BigDecimal MIN_DEPOSIT = new BigDecimal("0.01");
     private static final BigDecimal MAX_DEPOSIT = new BigDecimal("5000");
 
-    private String username;
-    private String password;
+    private CreateUserRequest user;
     private Long accountId;
 
     @BeforeEach
     @DisplayName("Предусловие: создан пользователь USER и счёт")
     void initUserAndAccount() {
-        // 1) создаём пользователя (USER)
-        username = RandomData.getUsername();
-        password = RandomData.getPassword();
+        // 1) пользователь USER
+        user = AdminSteps.createUser();
 
-        new AdminCreateUserRequester(
-                RequestSpecs.adminSpec(),
-                ResponseSpecs.entityWasCreated()
-        ).post(CreateUserRequest.builder()
-                .username(username)
-                .password(password)
-                .role(UserRole.USER)
-                .build());
+        // 2) авторизация пользователя
+        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
 
-        // 2) авторизуемся
-        var userSpec = RequestSpecs.authAsUser(username, password);
-
-        // 3) создаём счёт и берём id
-        accountId = createAccount(userSpec);
+        // 3) создание счёта
+        AccountResponse acc = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated());
+        accountId = acc.getId();
     }
 
-    // Позитивные кейсы
-    static Stream<String> validAmounts() {
+    // Позитивные суммы
+    static Stream<BigDecimal> validAmounts() {
         return Stream.of(
-                MIN_DEPOSIT.toPlainString(),
-                "1",
-                "10.50",
-                "4999.99",
-                "4121.992",
-                MAX_DEPOSIT.toPlainString()
+                MIN_DEPOSIT,
+                new BigDecimal("1"),
+                new BigDecimal("10.50"),
+                new BigDecimal("4999.99"),
+                new BigDecimal("4121.992"),
+                MAX_DEPOSIT
         );
     }
 
     @ParameterizedTest
     @MethodSource("validAmounts")
     @DisplayName("Позитив: депозит допустимых сумм в свой счёт")
-    void depositValidAmounts(String amountStr) {
-        var userSpec = RequestSpecs.authAsUser(username, password);
+    void depositValidAmounts(BigDecimal amount) {
+        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
 
-        new DepositRequester(userSpec, ResponseSpecs.requestReturnsOK())
-                .post(new DepositRequest(accountId, new BigDecimal(amountStr)));
-    }
+        DepositRequest payload = DepositRequest.builder()
+                .id(accountId)
+                .balance(amount)
+                .build();
 
-    // Вспомогательный метод: создать счёт и вернуть его id
-    private Long createAccount(io.restassured.specification.RequestSpecification userSpec) {
-        AccountResponse acc = new CreateAccountRequester(userSpec, ResponseSpecs.entityWasCreated())
-                .post(null)
-                .extract().as(AccountResponse.class);
-        return acc.getId();
+        AccountResponse resp = AccountSteps.deposit(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                payload
+        );
+
+        // Сопоставление по конфигу (id -> id, balance -> balance)
+        assertThatModels(payload, resp).match();
     }
 
     @Test
     @DisplayName("Позитив: депозит только во второй счёт (первый пустой)")
     void depositIntoSecondAccountWhenFirstEmpty() {
-        var userSpec = RequestSpecs.authAsUser(username, password);
-        Long firstAccountId = createAccount(userSpec);
-        Long secondAccountId = createAccount(userSpec);
+        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
+        Long firstAccountId = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated()).getId();
+        Long secondAccountId = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated()).getId();
 
-        new DepositRequester(userSpec, ResponseSpecs.requestReturnsOK())
-                .post(new DepositRequest(secondAccountId, new BigDecimal("10.00")));
+        AccountResponse resp = AccountSteps.deposit(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                DepositRequest.builder().id(secondAccountId).balance(new BigDecimal("10.00")).build()
+        );
+        // Проверяем по конфигу
+        assertThatModels(
+                DepositRequest.builder().id(secondAccountId).balance(new BigDecimal("10.00")).build(),
+                resp
+        ).match();
     }
 
     @Test
     @DisplayName("Позитив: депозит в каждый из двух счетов")
     void depositIntoEachOfTwoAccounts() {
-        var userSpec = RequestSpecs.authAsUser(username, password);
-        Long firstAccountId = createAccount(userSpec);
-        Long secondAccountId = createAccount(userSpec);
+        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
+        Long firstAccountId = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated()).getId();
+        Long secondAccountId = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated()).getId();
 
-        var depositRequester = new DepositRequester(userSpec, ResponseSpecs.requestReturnsOK());
-        depositRequester.post(new DepositRequest(firstAccountId, new BigDecimal("5.00")));
-        depositRequester.post(new DepositRequest(secondAccountId, new BigDecimal("7.50")));
+        AccountResponse r1 = AccountSteps.deposit(
+                userSpec, ResponseSpecs.requestReturnsOK(),
+                DepositRequest.builder().id(firstAccountId).balance(new BigDecimal("5.00")).build()
+        );
+        assertThatModels(
+                DepositRequest.builder().id(firstAccountId).balance(new BigDecimal("5.00")).build(), r1
+        ).match();
+
+        AccountResponse r2 = AccountSteps.deposit(
+                userSpec, ResponseSpecs.requestReturnsOK(),
+                DepositRequest.builder().id(secondAccountId).balance(new BigDecimal("7.50")).build()
+        );
+        assertThatModels(
+                DepositRequest.builder().id(secondAccountId).balance(new BigDecimal("7.50")).build(), r2
+        ).match();
     }
 
-    // Негативные кейсы:
-    static Stream<String> invalidAmounts() {
+    // Негативные суммы (валидация)
+    static Stream<BigDecimal> invalidAmounts() {
         return Stream.of(
-                "0",
-                "-0.01",
-                "-1",
-                MAX_DEPOSIT.add(MIN_DEPOSIT).toPlainString()
+                new BigDecimal("0"),
+                new BigDecimal("-0.01"),
+                new BigDecimal("-1"),
+                MAX_DEPOSIT.add(MIN_DEPOSIT) // > MAX
         );
     }
 
     @ParameterizedTest
     @MethodSource("invalidAmounts")
     @DisplayName("Негатив: депозит недопустимых сумм")
-    void depositInvalidAmount(String badAmount) {
-        var userSpec = RequestSpecs.authAsUser(username, password);
-        Long accountId = createAccount(userSpec);
+    void depositInvalidAmount(BigDecimal badAmount) {
+        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
 
-        new DepositRequester(
+        new CrudRequester(
                 userSpec,
+                Endpoint.DEPOSIT,
                 new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_BAD_REQUEST).build()
-        ).post(new DepositRequest(accountId, new BigDecimal(badAmount)));
+        ).post(DepositRequest.builder().id(accountId).balance(badAmount).build());
     }
 
     // Невалидные payload
     static Stream<Object> invalidPayloads() {
-        // balance: null/пустые/строка/булево/массив/объект
         Map<String, Object> balanceNull = map(1, null);
         Map<String, Object> balanceEmpty = map(1, "");
         Map<String, Object> balanceSpace = map(1, " ");
@@ -146,7 +162,6 @@ public class DepositTest extends BaseTest {
         Map<String, Object> balanceArray = map(1, List.of("10"));
         Map<String, Object> balanceObject = map(1, Map.of("amount", "10"));
 
-        // отсутствует balance / отсутствует id / некорректный id
         Map<String, Object> noBalance = new HashMap<>() {{
             put("id", 1);
         }};
@@ -178,7 +193,6 @@ public class DepositTest extends BaseTest {
             put("balance", 10);
         }};
 
-        // сырой body
         String emptyRaw = "";
         String jsonNull = "null";
         Map<String, Object> emptyObj = Map.of();
@@ -194,54 +208,53 @@ public class DepositTest extends BaseTest {
     @MethodSource("invalidPayloads")
     @DisplayName("Негатив: депозит — некорректный payload")
     void depositInvalidPayload(Object body) {
-        var userSpec = RequestSpecs.authAsUser(username, password);
-        Long accountId = createAccount(userSpec);
+        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
 
         if (body instanceof Map<?, ?> map && map.containsKey("id") && map.get("id") instanceof Integer i && i == 1) {
             ((Map<String, Object>) map).put("id", accountId);
         }
 
-        new DepositRequester(
-                userSpec,
-                new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_BAD_REQUEST).build()
-        ).postRaw(body);
+        given()
+                .spec(userSpec)
+                .contentType(ContentType.JSON)
+                .body(body)
+                .when()
+                .post("/api/v1" + Endpoint.DEPOSIT.getUrl())
+                .then()
+                .assertThat()
+                .spec(new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_BAD_REQUEST).build());
     }
 
     @Test
     @DisplayName("Негатив: депозит в чужой счёт")
     void depositForeignAccount() {
-        String otherUser = RandomData.getUsername();
-        String otherPass = RandomData.getPassword();
+        // создаём другого пользователя и его счёт
+        CreateUserRequest other = AdminSteps.createUser();
+        var otherSpec = RequestSpecs.authAsUser(other.getUsername(), other.getPassword());
+        Long foreignAccountId = AccountSteps.createAccount(otherSpec, ResponseSpecs.entityWasCreated()).getId();
 
-        new AdminCreateUserRequester(RequestSpecs.adminSpec(), ResponseSpecs.entityWasCreated())
-                .post(CreateUserRequest.builder()
-                        .username(otherUser).password(otherPass).role(UserRole.USER).build());
+        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
 
-        var otherSpec = RequestSpecs.authAsUser(otherUser, otherPass);
-        Long foreignAccountId = createAccount(otherSpec);
-
-        var userSpec = RequestSpecs.authAsUser(username, password);
-
-        new DepositRequester(
+        new CrudRequester(
                 userSpec,
+                Endpoint.DEPOSIT,
                 new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_FORBIDDEN).build()
-        ).post(new DepositRequest(foreignAccountId, new BigDecimal("10")));
+        ).post(DepositRequest.builder().id(foreignAccountId).balance(new BigDecimal("10")).build());
     }
 
     @Test
     @DisplayName("Негатив: депозит в несуществующий счёт")
     void depositNonexistentAccount() {
-        var userSpec = RequestSpecs.authAsUser(username, password);
-        Long accountId = createAccount(userSpec);
+        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
         long nonexistentId = accountId + 999_999L;
 
-        new DepositRequester(
+        new CrudRequester(
                 userSpec,
+                Endpoint.DEPOSIT,
                 new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_FORBIDDEN).build()
-        ).post(new DepositRequest(nonexistentId, new BigDecimal("10")));
+        ).post(DepositRequest.builder().id(nonexistentId).balance(new BigDecimal("10")).build());
     }
 
-    // Используется в негативных тестах, чтобы передавать любые типы
     private static Map<String, Object> map(Object id, Object balance) {
         Map<String, Object> m = new HashMap<>();
         m.put("id", id);

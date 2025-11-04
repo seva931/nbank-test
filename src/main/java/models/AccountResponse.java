@@ -12,7 +12,7 @@ import java.util.List;
 @AllArgsConstructor
 @NoArgsConstructor
 @Builder
-public class AccountResponse {
+public class AccountResponse extends BaseModel {
     private Long id;
     private String accountNumber;
     private BigDecimal balance;

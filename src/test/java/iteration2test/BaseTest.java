@@ -11,7 +11,8 @@ public class BaseTest {
     public void setupTest() {
         this.softly = new SoftAssertions();
     }
-@AfterEach
+
+    @AfterEach
     public void afterTest() {
         softly.assertAll();
     }
