@@ -1,7 +1,6 @@
 package iteration2test;
 
 import io.restassured.builder.ResponseSpecBuilder;
-import io.restassured.http.ContentType;
 import models.CreateUserRequest;
 import models.DepositRequest;
 import models.TransferRequest;
@@ -26,7 +25,6 @@ import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Stream;
 
-import static io.restassured.RestAssured.given;
 import static models.comparison.ModelAssertions.assertThatModels;
 
 
@@ -253,15 +251,11 @@ public class MoneyTransferTest extends BaseTest {
             body = b;
         }
 
-        given()
-                .spec(userSpec)
-                .contentType(ContentType.JSON)
-                .body(body)
-                .when()
-                .post("/api/v1" + Endpoint.TRANSFER.getUrl())
-                .then()
-                .assertThat()
-                .spec(new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_BAD_REQUEST).build());
+        var bad = new ResponseSpecBuilder()
+                .expectStatusCode(HttpStatus.SC_BAD_REQUEST)
+                .build();
+
+        new CrudRequester(userSpec, Endpoint.TRANSFER, bad).post(body);
     }
 
     private static Map<String, Object> map(Object senderId, Object receiverId, Object amount) {

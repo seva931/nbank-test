@@ -92,14 +92,18 @@ public class DepositTest extends BaseTest {
         Long firstAccountId = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated()).getId();
         Long secondAccountId = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated()).getId();
 
+        BigDecimal amount = BigDecimal
+                .valueOf(ThreadLocalRandom.current().nextDouble(0.01, 5000.00))
+                .setScale(2, RoundingMode.HALF_UP);
+
         AccountResponse resp = AccountSteps.deposit(
                 userSpec,
                 ResponseSpecs.requestReturnsOK(),
-                DepositRequest.builder().id(secondAccountId).balance(new BigDecimal("10.00")).build()
+                DepositRequest.builder().id(secondAccountId).balance(amount).build()
         );
-        // Проверяем по конфигу
+
         assertThatModels(
-                DepositRequest.builder().id(secondAccountId).balance(new BigDecimal("10.00")).build(),
+                DepositRequest.builder().id(secondAccountId).balance(amount).build(),
                 resp
         ).match();
     }
