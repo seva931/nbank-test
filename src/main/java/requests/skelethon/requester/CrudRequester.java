@@ -48,4 +48,25 @@ public class CrudRequester extends HttpRequest implements CrudEndpointInterface 
     public Object delete(long id) {
         return null;
     }
+
+    public ValidatableResponse post(Object raw) {
+        var body = raw == null ? "" : raw;
+        return given()
+                .spec(requestSpecification)
+                .body(body)
+                .post(endpoint.getUrl())
+                .then()
+                .assertThat()
+                .spec(responseSpecification);
+    }
+    public ValidatableResponse update(long id, Object raw) {
+        var body = raw == null ? "" : raw;
+        return given()
+                .spec(requestSpecification)
+                .body(body)
+                .put(endpoint.getUrl())
+                .then()
+                .assertThat()
+                .spec(responseSpecification);
+    }
 }

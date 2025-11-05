@@ -1,7 +1,6 @@
 package iteration2test;
 
 import io.restassured.builder.ResponseSpecBuilder;
-import io.restassured.http.ContentType;
 import models.AccountResponse;
 import models.CreateUserRequest;
 import models.DepositRequest;
@@ -19,12 +18,13 @@ import specs.RequestSpecs;
 import specs.ResponseSpecs;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Stream;
 
-import static io.restassured.RestAssured.given;
 import static models.comparison.ModelAssertions.assertThatModels;
 
 // Кейсы для депозита счета: POST /api/v1/accounts/deposit
@@ -111,21 +111,24 @@ public class DepositTest extends BaseTest {
         Long firstAccountId = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated()).getId();
         Long secondAccountId = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated()).getId();
 
+        BigDecimal amount1 = BigDecimal
+                .valueOf(ThreadLocalRandom.current().nextDouble(0.01, 5000.00))
+                .setScale(2, RoundingMode.HALF_UP);
+        BigDecimal amount2 = BigDecimal
+                .valueOf(ThreadLocalRandom.current().nextDouble(0.01, 5000.00))
+                .setScale(2, RoundingMode.HALF_UP);
+
         AccountResponse r1 = AccountSteps.deposit(
                 userSpec, ResponseSpecs.requestReturnsOK(),
-                DepositRequest.builder().id(firstAccountId).balance(new BigDecimal("5.00")).build()
+                DepositRequest.builder().id(firstAccountId).balance(amount1).build()
         );
-        assertThatModels(
-                DepositRequest.builder().id(firstAccountId).balance(new BigDecimal("5.00")).build(), r1
-        ).match();
+        assertThatModels(DepositRequest.builder().id(firstAccountId).balance(amount1).build(), r1).match();
 
         AccountResponse r2 = AccountSteps.deposit(
                 userSpec, ResponseSpecs.requestReturnsOK(),
-                DepositRequest.builder().id(secondAccountId).balance(new BigDecimal("7.50")).build()
+                DepositRequest.builder().id(secondAccountId).balance(amount2).build()
         );
-        assertThatModels(
-                DepositRequest.builder().id(secondAccountId).balance(new BigDecimal("7.50")).build(), r2
-        ).match();
+        assertThatModels(DepositRequest.builder().id(secondAccountId).balance(amount2).build(), r2).match();
     }
 
     // Негативные суммы (валидация)
@@ -214,15 +217,11 @@ public class DepositTest extends BaseTest {
             ((Map<String, Object>) map).put("id", accountId);
         }
 
-        given()
-                .spec(userSpec)
-                .contentType(ContentType.JSON)
-                .body(body)
-                .when()
-                .post("/api/v1" + Endpoint.DEPOSIT.getUrl())
-                .then()
-                .assertThat()
-                .spec(new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_BAD_REQUEST).build());
+        var bad = new ResponseSpecBuilder()
+                .expectStatusCode(HttpStatus.SC_BAD_REQUEST)
+                .build();
+
+        new CrudRequester(userSpec, Endpoint.DEPOSIT, bad).post(body);
     }
 
     @Test

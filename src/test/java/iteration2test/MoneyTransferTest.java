@@ -2,7 +2,10 @@ package iteration2test;
 
 import io.restassured.builder.ResponseSpecBuilder;
 import io.restassured.http.ContentType;
-import models.*;
+import models.CreateUserRequest;
+import models.DepositRequest;
+import models.TransferRequest;
+import models.TransferResponse;
 import org.apache.http.HttpStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -17,21 +20,23 @@ import specs.RequestSpecs;
 import specs.ResponseSpecs;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Stream;
 
 import static io.restassured.RestAssured.given;
 import static models.comparison.ModelAssertions.assertThatModels;
 
 
- // Кейсы для перевода денег: POST /api/v1/accounts/transfer
+// Кейсы для перевода денег: POST /api/v1/accounts/transfer
 public class MoneyTransferTest extends BaseTest {
 
     // Бизнес-константы
     private static final BigDecimal MIN_TRANSFER = new BigDecimal("0.01");
     private static final BigDecimal MAX_TRANSFER = new BigDecimal("10000");
-    private static final BigDecimal DEPOSIT_MAX  = new BigDecimal("5000");
+    private static final BigDecimal DEPOSIT_MAX = new BigDecimal("5000");
 
     private CreateUserRequest user;
     private Long senderAccountId;
@@ -43,7 +48,7 @@ public class MoneyTransferTest extends BaseTest {
         user = AdminSteps.createUser();
 
         var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
-        senderAccountId   = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated()).getId();
+        senderAccountId = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated()).getId();
         receiverAccountId = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated()).getId();
     }
 
@@ -87,7 +92,9 @@ public class MoneyTransferTest extends BaseTest {
         Long foreignReceiverId = AccountSteps.createAccount(otherSpec, ResponseSpecs.entityWasCreated()).getId();
 
         var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
-        BigDecimal amount = new BigDecimal("2500.50");
+        BigDecimal amount = BigDecimal
+                .valueOf(ThreadLocalRandom.current().nextDouble(0.01, 5000.00))
+                .setScale(2, RoundingMode.HALF_UP);
         fundAccount(userSpec, senderAccountId, amount);
 
         TransferRequest payload = new TransferRequest(senderAccountId, foreignReceiverId, amount);
@@ -199,15 +206,24 @@ public class MoneyTransferTest extends BaseTest {
 
     //Негативные payload
     static Stream<Object> invalidTransferPayloads() {
-        Map<String, Object> amountNull   = map(111L, 222L, null);
-        Map<String, Object> amountEmpty  = map(111L, 222L, "");
-        Map<String, Object> amountText   = map(111L, 222L, "abc");
+        Map<String, Object> amountNull = map(111L, 222L, null);
+        Map<String, Object> amountEmpty = map(111L, 222L, "");
+        Map<String, Object> amountText = map(111L, 222L, "abc");
 
-        Map<String, Object> noAmount     = new HashMap<>() {{ put("senderAccountId", 111L); put("receiverAccountId", 222L); }};
-        Map<String, Object> noSender     = new HashMap<>() {{ put("receiverAccountId", 222L); put("amount", 10); }};
-        Map<String, Object> noReceiver   = new HashMap<>() {{ put("senderAccountId", 111L); put("amount", 10); }};
+        Map<String, Object> noAmount = new HashMap<>() {{
+            put("senderAccountId", 111L);
+            put("receiverAccountId", 222L);
+        }};
+        Map<String, Object> noSender = new HashMap<>() {{
+            put("receiverAccountId", 222L);
+            put("amount", 10);
+        }};
+        Map<String, Object> noReceiver = new HashMap<>() {{
+            put("senderAccountId", 111L);
+            put("amount", 10);
+        }};
 
-        Map<String, Object> senderNull   = map(null, 222L, 10);
+        Map<String, Object> senderNull = map(null, 222L, 10);
         Map<String, Object> receiverNull = map(111L, null, 10);
 
         String emptyRaw = "";
@@ -232,7 +248,7 @@ public class MoneyTransferTest extends BaseTest {
         if (raw instanceof Map<?, ?> m) {
             Map<String, Object> b = new HashMap<>();
             m.forEach((k, v) -> b.put(String.valueOf(k), v));
-            if (b.containsKey("senderAccountId"))   b.put("senderAccountId", senderAccountId);
+            if (b.containsKey("senderAccountId")) b.put("senderAccountId", senderAccountId);
             if (b.containsKey("receiverAccountId")) b.put("receiverAccountId", receiverAccountId);
             body = b;
         }

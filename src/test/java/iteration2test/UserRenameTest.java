@@ -1,7 +1,6 @@
 package iteration2test;
 
 import io.restassured.builder.ResponseSpecBuilder;
-import io.restassured.http.ContentType;
 import models.CreateUserRequest;
 import models.UpdateProfileRequest;
 import models.UpdateProfileResponse;
@@ -22,7 +21,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
-import static io.restassured.RestAssured.given;
 import static models.comparison.ModelAssertions.assertThatModels;
 
 // Кейсы для изменения имени в профиле: PUT /api/v1/customer/profile
@@ -107,14 +105,11 @@ public class UserRenameTest extends BaseTest {
     void userCannotSetInvalidFullNameByPayload(Object body) {
         var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
 
-        given()
-                .spec(userSpec)
-                .contentType(ContentType.JSON)
-                .body(body)
-                .when()
-                .put("/api/v1" + Endpoint.PROFILE_UPDATE.getUrl())
-                .then()
-                .assertThat()
-                .spec(new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_BAD_REQUEST).build());
+        var bad = new ResponseSpecBuilder()
+                .expectStatusCode(HttpStatus.SC_BAD_REQUEST)
+                .build();
+
+        new CrudRequester(userSpec, Endpoint.PROFILE_UPDATE, bad)
+                .update(0L, body);
     }
 }
