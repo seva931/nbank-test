@@ -1,1001 +1,330 @@
 package iteration2test;
 
-import io.restassured.RestAssured;
-import io.restassured.filter.log.RequestLoggingFilter;
-import io.restassured.filter.log.ResponseLoggingFilter;
-import io.restassured.http.ContentType;
+import generators.RandomData;
+import io.restassured.builder.ResponseSpecBuilder;
+import models.*;
 import org.apache.http.HttpStatus;
-import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import requests.AdminCreateUserRequester;
+import requests.CreateAccountRequester;
+import requests.DepositRequester;
+import requests.TransferRequester;
+import specs.RequestSpecs;
+import specs.ResponseSpecs;
 
-import java.util.List;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.stream.Stream;
 
-import static io.restassured.RestAssured.given;
+// Кейсы для перевода денег: POST /api/v1/accounts/transfer
+public class MoneyTransferTest extends BaseTest {
 
-public class MoneyTransferTest {
+    // Бизнес-константы
+    private static final BigDecimal MIN_TRANSFER = new BigDecimal("0.01");
+    private static final BigDecimal MAX_TRANSFER = new BigDecimal("10000");
+    private static final BigDecimal DEPOSIT_MAX  = new BigDecimal("5000");
 
-    @BeforeAll
-    public static void setupRestAssured() {
-        RestAssured.filters(
-                List.of(new RequestLoggingFilter(),
-                        new ResponseLoggingFilter())
+    private String username;
+    private String password;
+    private Long senderAccountId;
+    private Long receiverAccountId;
+
+    @BeforeEach
+    @DisplayName("Предусловие: создан пользователь с ролью USER и два счёта")
+    void initUser() {
+        username = RandomData.getUsername();
+        password = RandomData.getPassword();
+
+        new AdminCreateUserRequester(RequestSpecs.adminSpec(), ResponseSpecs.entityWasCreated())
+                .post(CreateUserRequest.builder()
+                        .username(username)
+                        .password(password)
+                        .role(UserRole.USER)
+                        .build());
+
+        var userSpec = RequestSpecs.authAsUser(username, password);
+        senderAccountId   = createAccount(userSpec);
+        receiverAccountId = createAccount(userSpec);
+    }
+
+    // Позитивные кейсы
+    static Stream<BigDecimal> positiveAmounts() {
+        return Stream.of(
+                MIN_TRANSFER,
+                new BigDecimal("1"),
+                new BigDecimal("2500.50"),
+                MAX_TRANSFER
         );
     }
 
-    @Test
-    public void userCanTransferMoneyBetweenOwnAccounts() {
+    @ParameterizedTest
+    @MethodSource("positiveAmounts")
+    @DisplayName("Перевод между своими счетами: допустимые суммы")
+    void transferPositiveAmountsBetweenOwnAccounts(BigDecimal amount) {
+        var userSpec = RequestSpecs.authAsUser(username, password);
 
-        UserCredentials creds = TestDataFactory.generateUser();
-        String username = creds.getUsername();
-        String password = creds.getPassword();
+        fundAccount(userSpec, senderAccountId, amount);
 
-        // 1 создаём юзера под админом
-        given()
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .header("Authorization", "Basic YWRtaW46YWRtaW4=") // admin:admin
-                .body("""
-                        {
-                          "username": "%s",
-                          "password": "%s",
-                          "role": "USER"
-                        }
-                        """.formatted(username, password))
-                .when()
-                .post("http://localhost:4111/api/v1/admin/users")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_CREATED);
+        var transferRequester = new TransferRequester(userSpec, ResponseSpecs.requestReturnsOK());
+        TransferResponse resp = transferRequester
+                .post(TransferRequest.builder()
+                        .senderAccountId(senderAccountId)
+                        .receiverAccountId(receiverAccountId)
+                        .amount(amount)
+                        .build())
+                .extract().as(TransferResponse.class);
 
-        // 2 логинимся юзером, забираем токен
-        String userAuthHeader =
-                given()
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .body("""
-                                {
-                                  "username": "%s",
-                                  "password": "%s"
-                                }
-                                """.formatted(username, password))
-                        .when()
-                        .post("http://localhost:4111/api/v1/auth/login")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_OK)
-                        .extract()
-                        .header("Authorization");
-
-        // 3 создаём счёт и достаём его id
-        Integer accountId =
-                given()
-                        .header("Authorization", userAuthHeader)
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .when()
-                        .post("http://localhost:4111/api/v1/accounts")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_CREATED)
-                        .extract()
-                        .jsonPath()
-                        .getInt("id");
-
-        // 4 кладем 4000 на счет
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "id": %d,
-                          "balance": 4000
-                        }
-                        """.formatted(accountId))
-                .when()
-                .post("http://localhost:4111/api/v1/accounts/deposit")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_OK);
-
-        // 5 создаём второй счет и достаём его id
-        Integer accountId2 =
-                given()
-                        .header("Authorization", userAuthHeader)
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .when()
-                        .post("http://localhost:4111/api/v1/accounts")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_CREATED)
-                        .extract()
-                        .jsonPath()
-                        .getInt("id");
-        // 6 перевод денег с одного своего счета на другой свой счет
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "senderAccountId": %d,
-                          "receiverAccountId": %d,
-                          "amount": 2500.50
-                        }
-                        """.formatted(accountId, accountId2))
-                .when()
-                .post("http://localhost:4111/api/v1/accounts/transfer")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_OK);
+        softly.assertThat(resp.getMessage()).isEqualTo("Transfer successful");
+        softly.assertThat(resp.getSenderAccountId()).isEqualTo(senderAccountId);
+        softly.assertThat(resp.getReceiverAccountId()).isEqualTo(receiverAccountId);
+        softly.assertThat(resp.getAmount()).isEqualByComparingTo(amount);
     }
 
     @Test
-    public void userCanTransferMaxAllowedAmountBetweenOwnAccountsSuccess() {
+    @DisplayName("Перевод на чужой счёт")
+    void transferToForeignAccount() {
+        var userSpec = RequestSpecs.authAsUser(username, password);
 
-        UserCredentials creds = TestDataFactory.generateUser();
-        String username = creds.getUsername();
-        String password = creds.getPassword();
+        String otherUser = RandomData.getUsername();
+        String otherPass = RandomData.getPassword();
+        new AdminCreateUserRequester(RequestSpecs.adminSpec(), ResponseSpecs.entityWasCreated())
+                .post(CreateUserRequest.builder()
+                        .username(otherUser).password(otherPass).role(UserRole.USER).build());
+        var otherSpec = RequestSpecs.authAsUser(otherUser, otherPass);
+        Long foreignReceiverId = createAccount(otherSpec);
 
-        // 1 создаём юзера под админом
-        given()
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .header("Authorization", "Basic YWRtaW46YWRtaW4=") // admin:admin
-                .body("""
-                        {
-                          "username": "%s",
-                          "password": "%s",
-                          "role": "USER"
-                        }
-                        """.formatted(username, password))
-                .when()
-                .post("http://localhost:4111/api/v1/admin/users")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_CREATED);
+        BigDecimal amount = BigDecimal
+                .valueOf(ThreadLocalRandom.current().nextDouble(0.01, 5000.00))
+                .setScale(2, RoundingMode.HALF_UP);
+        fundAccount(userSpec, senderAccountId, amount);
 
-        // 2 логинимся юзером, забираем токен
-        String userAuthHeader =
-                given()
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .body("""
-                                {
-                                  "username": "%s",
-                                  "password": "%s"
-                                }
-                                """.formatted(username, password))
-                        .when()
-                        .post("http://localhost:4111/api/v1/auth/login")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_OK)
-                        .extract()
-                        .header("Authorization");
+        var transferRequester = new TransferRequester(userSpec, ResponseSpecs.requestReturnsOK());
+        TransferResponse resp = transferRequester
+                .post(new TransferRequest(senderAccountId, foreignReceiverId, amount))
+                .extract().as(TransferResponse.class);
 
-        // 3 создаём счёт и достаём его id
-        Integer accountId =
-                given()
-                        .header("Authorization", userAuthHeader)
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .when()
-                        .post("http://localhost:4111/api/v1/accounts")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_CREATED)
-                        .extract()
-                        .jsonPath()
-                        .getInt("id");
-
-        // 4 кладем 4000 на счет
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "id": %d,
-                          "balance": 4000
-                        }
-                        """.formatted(accountId))
-                .when()
-                .post("http://localhost:4111/api/v1/accounts/deposit")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_OK);
-        // 5 кладем еще раз 4000
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "id": %d,
-                          "balance": 4000
-                        }
-                        """.formatted(accountId))
-                .when()
-                .post("http://localhost:4111/api/v1/accounts/deposit")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_OK);
-        // 6 кладем еще раз 4000
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "id": %d,
-                          "balance": 4000
-                        }
-                        """.formatted(accountId))
-                .when()
-                .post("http://localhost:4111/api/v1/accounts/deposit")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_OK);
-
-        // 7 создаём второй счет и достаём его id
-        Integer accountId2 =
-                given()
-                        .header("Authorization", userAuthHeader)
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .when()
-                        .post("http://localhost:4111/api/v1/accounts")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_CREATED)
-                        .extract()
-                        .jsonPath()
-                        .getInt("id");
-
-        // 8 перевод денег с одного своего счета на другой свой счет
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "senderAccountId": %d,
-                          "receiverAccountId": %d,
-                          "amount": 10000
-                        }
-                        """.formatted(accountId, accountId2))
-                .when()
-                .post("http://localhost:4111/api/v1/accounts/transfer")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_OK);
+        softly.assertThat(resp.getMessage()).isEqualTo("Transfer successful");
+        softly.assertThat(resp.getSenderAccountId()).isEqualTo(senderAccountId);
+        softly.assertThat(resp.getReceiverAccountId()).isEqualTo(foreignReceiverId);
+        softly.assertThat(resp.getAmount()).isEqualByComparingTo(amount);
     }
 
-    @Test
-    public void userCannotTransferMoreThanLimitBetweenOwnAccountsAmountTooLarge() {
-
-        UserCredentials creds = TestDataFactory.generateUser();
-        String username = creds.getUsername();
-        String password = creds.getPassword();
-
-        // 1 создаём юзера под админом
-        given()
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .header("Authorization", "Basic YWRtaW46YWRtaW4=") // admin:admin
-                .body("""
-                        {
-                          "username": "%s",
-                          "password": "%s",
-                          "role": "USER"
-                        }
-                        """.formatted(username, password))
-                .when()
-                .post("http://localhost:4111/api/v1/admin/users")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_CREATED);
-
-        // 2 логинимся юзером, забираем токен
-        String userAuthHeader =
-                given()
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .body("""
-                                {
-                                  "username": "%s",
-                                  "password": "%s"
-                                }
-                                """.formatted(username, password))
-                        .when()
-                        .post("http://localhost:4111/api/v1/auth/login")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_OK)
-                        .extract()
-                        .header("Authorization");
-
-        // 3 создаём счёт и достаём его id
-        Integer accountId =
-                given()
-                        .header("Authorization", userAuthHeader)
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .when()
-                        .post("http://localhost:4111/api/v1/accounts")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_CREATED)
-                        .extract()
-                        .jsonPath()
-                        .getInt("id");
-
-        // 4 кладем 4000 на счет
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "id": %d,
-                          "balance": 4000
-                        }
-                        """.formatted(accountId))
-                .when()
-                .post("http://localhost:4111/api/v1/accounts/deposit")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_OK);
-        // 5 кладем еще раз 4000
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "id": %d,
-                          "balance": 4000
-                        }
-                        """.formatted(accountId))
-                .when()
-                .post("http://localhost:4111/api/v1/accounts/deposit")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_OK);
-        // 6 кладем еще раз 4000
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "id": %d,
-                          "balance": 4000
-                        }
-                        """.formatted(accountId))
-                .when()
-                .post("http://localhost:4111/api/v1/accounts/deposit")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_OK);
-
-        // 7 создаём второй счет и достаём его id
-        Integer accountId2 =
-                given()
-                        .header("Authorization", userAuthHeader)
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .when()
-                        .post("http://localhost:4111/api/v1/accounts")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_CREATED)
-                        .extract()
-                        .jsonPath()
-                        .getInt("id");
-        // 8 перевод денег с одного счета своего на другой
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "senderAccountId": %d,
-                          "receiverAccountId": %d,
-                          "amount": 10001
-                        }
-                        """.formatted(accountId, accountId2))
-                .when()
-                .post("http://localhost:4111/api/v1/accounts/transfer")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_BAD_REQUEST);
+    //Создаёт счёт и возвращает его id
+    private Long createAccount(io.restassured.specification.RequestSpecification userSpec) {
+        AccountResponse acc = new CreateAccountRequester(userSpec, ResponseSpecs.entityWasCreated())
+                .post(null)
+                .extract().as(AccountResponse.class);
+        return acc.getId();
     }
 
-    @Test
-    public void userCannotTransferZeroAmountBetweenOwnAccountsAmountZero() {
-
-        UserCredentials creds = TestDataFactory.generateUser();
-        String username = creds.getUsername();
-        String password = creds.getPassword();
-
-        // 1 создаём юзера под админом
-        given()
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .header("Authorization", "Basic YWRtaW46YWRtaW4=") // admin:admin
-                .body("""
-                        {
-                          "username": "%s",
-                          "password": "%s",
-                          "role": "USER"
-                        }
-                        """.formatted(username, password))
-                .when()
-                .post("http://localhost:4111/api/v1/admin/users")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_CREATED);
-
-        // 2 логинимся юзером, забираем токен
-        String userAuthHeader =
-                given()
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .body("""
-                                {
-                                  "username": "%s",
-                                  "password": "%s"
-                                }
-                                """.formatted(username, password))
-                        .when()
-                        .post("http://localhost:4111/api/v1/auth/login")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_OK)
-                        .extract()
-                        .header("Authorization");
-
-        // 3 создаём счёт и достаём его id
-        Integer accountId =
-                given()
-                        .header("Authorization", userAuthHeader)
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .when()
-                        .post("http://localhost:4111/api/v1/accounts")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_CREATED)
-                        .extract()
-                        .jsonPath()
-                        .getInt("id");
-
-        // 4 кладем 4000 на счет
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "id": %d,
-                          "balance": 4000
-                        }
-                        """.formatted(accountId))
-                .when()
-                .post("http://localhost:4111/api/v1/accounts/deposit")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_OK);
-        // 5 создаём второй счет и достаём его id
-        Integer accountId2 =
-                given()
-                        .header("Authorization", userAuthHeader)
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .when()
-                        .post("http://localhost:4111/api/v1/accounts")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_CREATED)
-                        .extract()
-                        .jsonPath()
-                        .getInt("id");
-        // 6 переводим с одного своего счета на другой (сумма 0)
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "senderAccountId": %d,
-                          "receiverAccountId": %d,
-                          "amount": 0
-                        }
-                        """.formatted(accountId, accountId2))
-                .when()
-                .post("http://localhost:4111/api/v1/accounts/transfer")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_BAD_REQUEST);
+    //Одиночный депозит
+    private void deposit(io.restassured.specification.RequestSpecification userSpec, Long accountId, BigDecimal amount) {
+        new DepositRequester(userSpec, ResponseSpecs.requestReturnsOK())
+                .post(new DepositRequest(accountId, amount));
     }
 
-    @Test
-    public void userTransferWithEmptyAmountReturnsServerError() {
-
-        UserCredentials creds = TestDataFactory.generateUser();
-        String username = creds.getUsername();
-        String password = creds.getPassword();
-
-        // 1 создаём юзера под админом
-        given()
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .header("Authorization", "Basic YWRtaW46YWRtaW4=") // admin:admin
-                .body("""
-                        {
-                          "username": "%s",
-                          "password": "%s",
-                          "role": "USER"
-                        }
-                        """.formatted(username, password))
-                .when()
-                .post("http://localhost:4111/api/v1/admin/users")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_CREATED);
-
-        // 2 логинимся юзером, забираем токен
-        String userAuthHeader =
-                given()
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .body("""
-                                {
-                                  "username": "%s",
-                                  "password": "%s"
-                                }
-                                """.formatted(username, password))
-                        .when()
-                        .post("http://localhost:4111/api/v1/auth/login")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_OK)
-                        .extract()
-                        .header("Authorization");
-
-        // 3 создаём счёт и достаём его id
-        Integer accountId =
-                given()
-                        .header("Authorization", userAuthHeader)
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .when()
-                        .post("http://localhost:4111/api/v1/accounts")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_CREATED)
-                        .extract()
-                        .jsonPath()
-                        .getInt("id");
-
-        // 4 кладем 4000 на счет
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "id": %d,
-                          "balance": 4000
-                        }
-                        """.formatted(accountId))
-                .when()
-                .post("http://localhost:4111/api/v1/accounts/deposit")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_OK);
-        // 5 создаём второй счет и достаём его id
-        Integer accountId2 =
-                given()
-                        .header("Authorization", userAuthHeader)
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .when()
-                        .post("http://localhost:4111/api/v1/accounts")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_CREATED)
-                        .extract()
-                        .jsonPath()
-                        .getInt("id");
-        // 6 переводим деньги с одного счвоего счета на другой (пустая строка)
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "senderAccountId": %d,
-                          "receiverAccountId": %d,
-                          "amount": ""
-                        }
-                        """.formatted(accountId, accountId2))
-                .when()
-                .post("http://localhost:4111/api/v1/accounts/transfer")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_INTERNAL_SERVER_ERROR);
+    /**
+     * Пополняет счёт суммой targetAmount с учётом лимита на один депозит (≤ 5000)
+     * Разбивает пополнение на несколько депозитов при необходимости
+     */
+    private void fundAccount(io.restassured.specification.RequestSpecification userSpec,
+                             Long accountId,
+                             BigDecimal targetAmount) {
+        BigDecimal remaining = targetAmount;
+        while (remaining.compareTo(BigDecimal.ZERO) > 0) {
+            BigDecimal chunk = remaining.min(DEPOSIT_MAX);
+            deposit(userSpec, accountId, chunk);
+            remaining = remaining.subtract(chunk);
+        }
     }
 
-    @Test
-    public void userCannotTransferNegativeAmountBetweenOwnAccountsAmountNegative() {
-
-        UserCredentials creds = TestDataFactory.generateUser();
-        String username = creds.getUsername();
-        String password = creds.getPassword();
-
-        // 1 создаём юзера под админом
-        given()
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .header("Authorization", "Basic YWRtaW46YWRtaW4=") // admin:admin
-                .body("""
-                        {
-                          "username": "%s",
-                          "password": "%s",
-                          "role": "USER"
-                        }
-                        """.formatted(username, password))
-                .when()
-                .post("http://localhost:4111/api/v1/admin/users")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_CREATED);
-
-        // 2 логинимся юзером, забираем токен
-        String userAuthHeader =
-                given()
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .body("""
-                                {
-                                  "username": "%s",
-                                  "password": "%s"
-                                }
-                                """.formatted(username, password))
-                        .when()
-                        .post("http://localhost:4111/api/v1/auth/login")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_OK)
-                        .extract()
-                        .header("Authorization");
-
-        // 3 создаём счёт и достаём его id
-        Integer accountId =
-                given()
-                        .header("Authorization", userAuthHeader)
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .when()
-                        .post("http://localhost:4111/api/v1/accounts")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_CREATED)
-                        .extract()
-                        .jsonPath()
-                        .getInt("id");
-
-        // 4 кладем 4000 на счет
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "id": %d,
-                          "balance": 4000
-                        }
-                        """.formatted(accountId))
-                .when()
-                .post("http://localhost:4111/api/v1/accounts/deposit")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_OK);
-        // 5 создаём второй счет и достаём его id
-        Integer accountId2 =
-                given()
-                        .header("Authorization", userAuthHeader)
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .when()
-                        .post("http://localhost:4111/api/v1/accounts")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_CREATED)
-                        .extract()
-                        .jsonPath()
-                        .getInt("id");
-        // 6 перевод денег с одного своего счета на другой (отрицательное число)
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "senderAccountId": %d,
-                          "receiverAccountId": %d,
-                          "amount": -1
-                        }
-                        """.formatted(accountId, accountId2))
-                .when()
-                .post("http://localhost:4111/api/v1/accounts/transfer")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_BAD_REQUEST);
+    // Негативные кейсы
+    static Stream<BigDecimal> negativeNumericAmounts() {
+        return Stream.of(
+                BigDecimal.ZERO,
+                new BigDecimal("-1"),
+                MAX_TRANSFER.add(MIN_TRANSFER)
+        );
     }
 
-    @Test
-    public void userCannotTransferMoreThanBalanceBetweenOwnAccountsInsufficientFunds() {
+    @ParameterizedTest
+    @MethodSource("negativeNumericAmounts")
+    @DisplayName("Негатив: перевод между своими счетами — суммы 0, <0, >MAX_TRANSFER")
+    void transferNegativeCoreAmountsBetweenOwnAccounts(BigDecimal amount) {
+        var userSpec = RequestSpecs.authAsUser(username, password);
 
-        UserCredentials creds = TestDataFactory.generateUser();
-        String username = creds.getUsername();
-        String password = creds.getPassword();
+        BigDecimal need = amount.compareTo(BigDecimal.ZERO) > 0 ? amount.min(MAX_TRANSFER) : new BigDecimal("1");
+        fundAccount(userSpec, senderAccountId, need);
 
-        // 1 создаём юзера под админом
-        given()
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .header("Authorization", "Basic YWRtaW46YWRtaW4=") // admin:admin
-                .body("""
-                        {
-                          "username": "%s",
-                          "password": "%s",
-                          "role": "USER"
-                        }
-                        """.formatted(username, password))
-                .when()
-                .post("http://localhost:4111/api/v1/admin/users")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_CREATED);
-
-        // 2 логинимся юзером, забираем токен
-        String userAuthHeader =
-                given()
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .body("""
-                                {
-                                  "username": "%s",
-                                  "password": "%s"
-                                }
-                                """.formatted(username, password))
-                        .when()
-                        .post("http://localhost:4111/api/v1/auth/login")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_OK)
-                        .extract()
-                        .header("Authorization");
-
-        // 3 создаём счёт и достаём его id
-        Integer accountId =
-                given()
-                        .header("Authorization", userAuthHeader)
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .when()
-                        .post("http://localhost:4111/api/v1/accounts")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_CREATED)
-                        .extract()
-                        .jsonPath()
-                        .getInt("id");
-
-        // 4 кладем 4000 на счет
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "id": %d,
-                          "balance": 4000
-                        }
-                        """.formatted(accountId))
-                .when()
-                .post("http://localhost:4111/api/v1/accounts/deposit")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_OK);
-        // 5 создаём второй счет и достаём его id
-        Integer accountId2 =
-                given()
-                        .header("Authorization", userAuthHeader)
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .when()
-                        .post("http://localhost:4111/api/v1/accounts")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_CREATED)
-                        .extract()
-                        .jsonPath()
-                        .getInt("id");
-        // 6 переводим деньги с одного счета на другой (сумма больше, чем на счету)
-        given()
-                .header("Authorization", userAuthHeader)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "senderAccountId": %d,
-                          "receiverAccountId": %d,
-                          "amount": 6000
-                        }
-                        """.formatted(accountId, accountId2))
-                .when()
-                .post("http://localhost:4111/api/v1/accounts/transfer")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_BAD_REQUEST);
+        new TransferRequester(
+                userSpec,
+                new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_BAD_REQUEST).build()
+        ).post(TransferRequest.builder()
+                .senderAccountId(senderAccountId)
+                .receiverAccountId(receiverAccountId)
+                .amount(amount)
+                .build());
     }
 
-    @Test
-    public void userCanTransferMoneyToAnotherUsersAccountSuccess() {
-        UserCredentials senderCreds = TestDataFactory.generateUser();
-        String senderUsername = senderCreds.getUsername();
-        String senderPassword = senderCreds.getPassword();
+    @ParameterizedTest
+    @MethodSource("negativeNumericAmounts")
+    @DisplayName("Негатив: перевод на чужой счёт — суммы 0/<0/>MAX_TRANSFER")
+    void transferToForeignNegativeAmounts(BigDecimal amount) {
+        var userSpec = RequestSpecs.authAsUser(username, password);
 
-        //1 создаём отправителя под админом
-        given()
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .header("Authorization", "Basic YWRtaW46YWRtaW4=") // admin:admin
-                .body("""
-                        {
-                          "username": "%s",
-                          "password": "%s",
-                          "role": "USER"
-                        }
-                        """.formatted(senderUsername, senderPassword))
-                .when()
-                .post("http://localhost:4111/api/v1/admin/users")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_CREATED);
+        String otherUser = RandomData.getUsername();
+        String otherPass = RandomData.getPassword();
+        new AdminCreateUserRequester(RequestSpecs.adminSpec(), ResponseSpecs.entityWasCreated())
+                .post(CreateUserRequest.builder()
+                        .username(otherUser)
+                        .password(otherPass)
+                        .role(UserRole.USER)
+                        .build());
+        var otherSpec = RequestSpecs.authAsUser(otherUser, otherPass);
+        Long foreignReceiverId = createAccount(otherSpec);
 
-        //2 логинимся отправителем, получаем его токен
-        String senderToken =
-                given()
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .body("""
-                                {
-                                  "username": "%s",
-                                  "password": "%s"
-                                }
-                                """.formatted(senderUsername, senderPassword))
-                        .when()
-                        .post("http://localhost:4111/api/v1/auth/login")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_OK)
-                        .extract()
-                        .header("Authorization");
+        BigDecimal preload = amount.compareTo(BigDecimal.ZERO) > 0 ? MAX_TRANSFER : new BigDecimal("1");
+        fundAccount(userSpec, senderAccountId, preload);
 
-        //3 создаём счёт отправителя
-        Integer senderAccountId =
-                given()
-                        .header("Authorization", senderToken)
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .when()
-                        .post("http://localhost:4111/api/v1/accounts")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_CREATED)
-                        .extract()
-                        .jsonPath()
-                        .getInt("id");
-
-        //4 пополняем счёт отправителя на 2100
-        given()
-                .header("Authorization", senderToken)
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "id": %d,
-                          "balance": 2100
-                        }
-                        """.formatted(senderAccountId))
-                .when()
-                .post("http://localhost:4111/api/v1/accounts/deposit")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_OK);
-
-        //5 создаем получателя
-
-        UserCredentials receiverCreds = TestDataFactory.generateUser();
-        String receiverUsername = receiverCreds.getUsername();
-        String receiverPassword = receiverCreds.getPassword();
-
-        // создаём получателя под админом
-        given()
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .header("Authorization", "Basic YWRtaW46YWRtaW4=") // admin:admin
-                .body("""
-                        {
-                          "username": "%s",
-                          "password": "%s",
-                          "role": "USER"
-                        }
-                        """.formatted(receiverUsername, receiverPassword))
-                .when()
-                .post("http://localhost:4111/api/v1/admin/users")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_CREATED);
-
-        //6 логинимся получателем, получаем его токен (чтобы иметь возможность создать ему счёт)
-        String receiverToken =
-                given()
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .body("""
-                                {
-                                  "username": "%s",
-                                  "password": "%s"
-                                }
-                                """.formatted(receiverUsername, receiverPassword))
-                        .when()
-                        .post("http://localhost:4111/api/v1/auth/login")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_OK)
-                        .extract()
-                        .header("Authorization");
-
-        //7 создаём счёт получателя
-        Integer receiverAccountId =
-                given()
-                        .header("Authorization", receiverToken)
-                        .contentType(ContentType.JSON)
-                        .accept(ContentType.JSON)
-                        .when()
-                        .post("http://localhost:4111/api/v1/accounts")
-                        .then()
-                        .assertThat()
-                        .statusCode(HttpStatus.SC_CREATED)
-                        .extract()
-                        .jsonPath()
-                        .getInt("id");
-
-        //8 перевод денег
-        given()
-                .header("Authorization", senderToken) //
-                .contentType(ContentType.JSON)
-                .accept(ContentType.JSON)
-                .body("""
-                        {
-                          "senderAccountId": %d,
-                          "receiverAccountId": %d,
-                          "amount": 2100
-                        }
-                        """.formatted(senderAccountId, receiverAccountId))
-                .when()
-                .post("http://localhost:4111/api/v1/accounts/transfer")
-                .then()
-                .assertThat()
-                .statusCode(HttpStatus.SC_OK);
+        new TransferRequester(
+                userSpec,
+                new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_BAD_REQUEST).build()
+        ).post(new TransferRequest(senderAccountId, foreignReceiverId, amount));
     }
 
+    // Негативные кейсы: превышение баланса отправителя
+    static Stream<BigDecimal> negativeAmountsExceedsBalance() {
+        return Stream.of(
+                new BigDecimal("100.01"),
+                new BigDecimal("5000.01")
+        );
+    }
+
+    @ParameterizedTest
+    @MethodSource("negativeAmountsExceedsBalance")
+    @DisplayName("Негатив: перевод между своими счетами — сумма превышает баланс отправителя")
+    void transferAmountExceedsBalanceBetweenOwnAccounts(BigDecimal amount) {
+        var userSpec = RequestSpecs.authAsUser(username, password);
+
+        BigDecimal balance = amount.subtract(MIN_TRANSFER);
+        fundAccount(userSpec, senderAccountId, balance);
+
+        new TransferRequester(
+                userSpec,
+                new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_BAD_REQUEST).build()
+        ).post(TransferRequest.builder()
+                .senderAccountId(senderAccountId)
+                .receiverAccountId(receiverAccountId)
+                .amount(amount)
+                .build());
+    }
+
+    @ParameterizedTest
+    @MethodSource("negativeAmountsExceedsBalance")
+    @DisplayName("Негатив: перевод на чужой счёт — сумма превышает баланс отправителя")
+    void transferToForeignExceedsSenderBalance(BigDecimal amount) {
+        var userSpec = RequestSpecs.authAsUser(username, password);
+
+        String otherUser = RandomData.getUsername();
+        String otherPass = RandomData.getPassword();
+        new AdminCreateUserRequester(RequestSpecs.adminSpec(), ResponseSpecs.entityWasCreated())
+                .post(CreateUserRequest.builder()
+                        .username(otherUser)
+                        .password(otherPass)
+                        .role(UserRole.USER)
+                        .build());
+        var otherSpec = RequestSpecs.authAsUser(otherUser, otherPass);
+        Long foreignReceiverId = createAccount(otherSpec);
+
+        BigDecimal balance = amount.subtract(MIN_TRANSFER);
+        fundAccount(userSpec, senderAccountId, balance);
+
+        new TransferRequester(
+                userSpec,
+                new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_BAD_REQUEST).build()
+        ).post(new TransferRequest(senderAccountId, foreignReceiverId, amount));
+    }
+
+    // Негативные payload
+    static Stream<Object> invalidTransferPayloads() {
+        // amount = null / "" / "abc"
+        Map<String, Object> amountNull = new HashMap<>();
+        amountNull.put("senderAccountId", 111L);
+        amountNull.put("receiverAccountId", 222L);
+        amountNull.put("amount", null);
+
+        Map<String, Object> amountEmpty = new HashMap<>();
+        amountEmpty.put("senderAccountId", 111L);
+        amountEmpty.put("receiverAccountId", 222L);
+        amountEmpty.put("amount", "");
+
+        Map<String, Object> amountText = new HashMap<>();
+        amountText.put("senderAccountId", 111L);
+        amountText.put("receiverAccountId", 222L);
+        amountText.put("amount", "abc");
+
+        // отсутствуют ключевые поля
+        Map<String, Object> noAmount = new HashMap<>();
+        noAmount.put("senderAccountId", 111L);
+        noAmount.put("receiverAccountId", 222L);
+
+        Map<String, Object> noSender = new HashMap<>();
+        noSender.put("receiverAccountId", 222L);
+        noSender.put("amount", 10);
+
+        Map<String, Object> noReceiver = new HashMap<>();
+        noReceiver.put("senderAccountId", 111L);
+        noReceiver.put("amount", 10);
+
+        // null в id
+        Map<String, Object> senderNull = new HashMap<>();
+        senderNull.put("senderAccountId", null);
+        senderNull.put("receiverAccountId", 222L);
+        senderNull.put("amount", 10);
+
+        Map<String, Object> receiverNull = new HashMap<>();
+        receiverNull.put("senderAccountId", 111L);
+        receiverNull.put("receiverAccountId", null);
+        receiverNull.put("amount", 10);
+
+        // сырьё
+        String emptyRaw = "";
+        String jsonNull = "null";
+
+        return Stream.of(
+                amountNull, amountEmpty, amountText,
+                noAmount, noSender, noReceiver,
+                senderNull, receiverNull,
+                emptyRaw, jsonNull
+        );
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidTransferPayloads")
+    @DisplayName("Негатив: между своими — кривые payload")
+    void transferBetweenOwnInvalidPayloadsReturns400(Object raw) {
+        var userSpec = RequestSpecs.authAsUser(username, password);
+        fundAccount(userSpec, senderAccountId, new BigDecimal("10"));
+
+        Object body = raw;
+        if (raw instanceof Map<?, ?> m) {
+            Map<String, Object> b = new HashMap<>();
+            m.forEach((k, v) -> b.put(String.valueOf(k), v));
+            if (b.containsKey("senderAccountId"))   b.put("senderAccountId", senderAccountId);
+            if (b.containsKey("receiverAccountId")) b.put("receiverAccountId", receiverAccountId);
+            body = b;
+        }
+
+        new TransferRequester(
+                userSpec,
+                new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_BAD_REQUEST).build()
+        ).postRaw(body);
+    }
 }
