@@ -17,8 +17,10 @@ import specs.RequestSpecs;
 import specs.ResponseSpecs;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Stream;
 
 // Кейсы для перевода денег: POST /api/v1/accounts/transfer
@@ -98,7 +100,9 @@ public class MoneyTransferTest extends BaseTest {
         var otherSpec = RequestSpecs.authAsUser(otherUser, otherPass);
         Long foreignReceiverId = createAccount(otherSpec);
 
-        BigDecimal amount = new BigDecimal("2500.50");
+        BigDecimal amount = BigDecimal
+                .valueOf(ThreadLocalRandom.current().nextDouble(0.01, 5000.00))
+                .setScale(2, RoundingMode.HALF_UP);
         fundAccount(userSpec, senderAccountId, amount);
 
         var transferRequester = new TransferRequester(userSpec, ResponseSpecs.requestReturnsOK());
