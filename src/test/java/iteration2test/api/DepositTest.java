@@ -1,4 +1,4 @@
-package iteration2test;
+package iteration2test.api;
 
 import io.restassured.builder.ResponseSpecBuilder;
 import models.AccountResponse;
