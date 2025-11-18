@@ -1,27 +1,27 @@
 package iteration2test.api;
 
 import io.restassured.builder.ResponseSpecBuilder;
-import models.CreateUserRequest;
-import models.UpdateProfileRequest;
-import models.UpdateProfileResponse;
+import api.models.CreateUserRequest;
+import api.models.UpdateProfileRequest;
+import api.models.UpdateProfileResponse;
 import org.apache.http.HttpStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
-import requests.skelethon.Endpoint;
-import requests.skelethon.requester.CrudRequester;
-import requests.steps.AdminSteps;
-import requests.steps.ProfileSteps;
-import specs.RequestSpecs;
-import specs.ResponseSpecs;
+import api.requests.skelethon.Endpoint;
+import api.requests.skelethon.requester.CrudRequester;
+import api.requests.steps.AdminSteps;
+import api.requests.steps.ProfileSteps;
+import api.specs.RequestSpecs;
+import api.specs.ResponseSpecs;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
-import static models.comparison.ModelAssertions.assertThatModels;
+import static api.models.comparison.ModelAssertions.assertThatModels;
 
 // Кейсы для изменения имени в профиле: PUT /api/v1/customer/profile
 public class UserRenameTest extends BaseTest {

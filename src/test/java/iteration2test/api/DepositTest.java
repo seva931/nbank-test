@@ -1,21 +1,21 @@
 package iteration2test.api;
 
 import io.restassured.builder.ResponseSpecBuilder;
-import models.AccountResponse;
-import models.CreateUserRequest;
-import models.DepositRequest;
+import api.models.AccountResponse;
+import api.models.CreateUserRequest;
+import api.models.DepositRequest;
 import org.apache.http.HttpStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
-import requests.skelethon.Endpoint;
-import requests.skelethon.requester.CrudRequester;
-import requests.steps.AccountSteps;
-import requests.steps.AdminSteps;
-import specs.RequestSpecs;
-import specs.ResponseSpecs;
+import api.requests.skelethon.Endpoint;
+import api.requests.skelethon.requester.CrudRequester;
+import api.requests.steps.AccountSteps;
+import api.requests.steps.AdminSteps;
+import api.specs.RequestSpecs;
+import api.specs.ResponseSpecs;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -25,7 +25,7 @@ import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Stream;
 
-import static models.comparison.ModelAssertions.assertThatModels;
+import static api.models.comparison.ModelAssertions.assertThatModels;
 
 // Кейсы для депозита счета: POST /api/v1/accounts/deposit
 
