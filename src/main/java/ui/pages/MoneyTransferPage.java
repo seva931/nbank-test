@@ -1,8 +1,12 @@
 package ui.pages;
 
+import com.codeborne.selenide.ElementsCollection;
 import com.codeborne.selenide.SelenideElement;
 import org.openqa.selenium.Alert;
 import org.openqa.selenium.Keys;
+import ui.elements.TransactionItem;
+
+import java.util.List;
 
 import static com.codeborne.selenide.Condition.*;
 import static com.codeborne.selenide.Selenide.*;
@@ -68,6 +72,14 @@ public class MoneyTransferPage extends BasePage<MoneyTransferPage> {
     // кнопка "Cancel" в модальном окне
     private final SelenideElement repeatTransferCancelButton =
             $(".modal.show button.btn-secondary");
+
+    // список операций в истории переводов
+    private final ElementsCollection transactionItems =
+            $$("li.list-group-item");
+
+    private List<TransactionItem> getTransactionItems() {
+        return generatePageElements(transactionItems, TransactionItem::new);
+    }
 
     // общий шаг: выбор счёта отправителя, ввод счёта получателя, суммы, подтверждение и отправка
     public MoneyTransferPage transfer(String senderAccountNumber, String recipientAccountNumber, String amount) {
@@ -194,18 +206,14 @@ public class MoneyTransferPage extends BasePage<MoneyTransferPage> {
     // открыть модальное окно повторного перевода по операции с нужной суммой
     public MoneyTransferPage openRepeatTransferModal(int amount) {
         String txType = "TRANSFER_OUT";
-        String amtToken = "$" + amount;
 
-        SelenideElement txItem = $$("li.list-group-item")
-                .filterBy(text(txType))
-                .filterBy(text(amtToken))
-                .first()
-                .shouldBe(visible);
+        TransactionItem txItem = getTransactionItems().stream()
+                .filter(item -> item.matches(txType, amount))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "Не найдено движение с типом " + txType + " и суммой $" + amount));
 
-        txItem.$("button")
-                .shouldHave(text("Repeat"))
-                .shouldBe(visible, enabled)
-                .click();
+        txItem.clickRepeat();
 
         repeatTransferModal.shouldBe(visible);
         repeatTransferModalTitle.shouldBe(visible).shouldHave(text("Repeat Transfer"));
@@ -369,5 +377,4 @@ public class MoneyTransferPage extends BasePage<MoneyTransferPage> {
 
         return this;
     }
-
 }
