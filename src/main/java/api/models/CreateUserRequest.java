@@ -17,4 +17,12 @@ public class CreateUserRequest extends BaseModel {
     private String password;
     @GeneratingRule(regex = "^USER$")
     private UserRole role;
+
+    public static CreateUserRequest getAdmin() {
+        return CreateUserRequest.builder()
+                .username("admin")
+                .password("admin")
+                .role(UserRole.ADMIN)   // в enum UserRole должен быть ADMIN
+                .build();
+    }
 }

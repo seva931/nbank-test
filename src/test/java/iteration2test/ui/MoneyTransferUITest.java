@@ -5,29 +5,23 @@ import api.models.CreateUserRequest;
 import api.models.DepositRequest;
 import api.models.TransferRequest;
 import api.requests.steps.AccountSteps;
-import api.requests.steps.AdminSteps;
 import api.specs.RequestSpecs;
 import api.specs.ResponseSpecs;
+import common.annotations.Browsers;
+import common.annotations.Device;
+import common.annotations.UserSession;
+import common.storage.SessionStorage;
 import io.restassured.specification.RequestSpecification;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.openqa.selenium.Alert;
 import ui.pages.MoneyTransferPage;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.concurrent.ThreadLocalRandom;
 
-import static com.codeborne.selenide.Selenide.switchTo;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class MoneyTransferUITest extends BaseUiTest {
-    private CreateUserRequest user;
-    private CreateUserRequest user2;
-    private RequestSpecification userSpec;
-    private RequestSpecification userSpec2;
-    private AccountResponse senderAccount;
-    private AccountResponse recipientAccount;
 
     // генерация валидной суммы
     private int generateValidAmount() {
@@ -50,48 +44,118 @@ public class MoneyTransferUITest extends BaseUiTest {
         return ThreadLocalRandom.current().nextInt(1, maxSecond + 1);
     }
 
-    @BeforeEach
-    void setUpUsersAndAccounts() {
-        // 1) пользователи (API)
-        user = AdminSteps.createUser();
-        user2 = AdminSteps.createUser();
-
-        // 2) авторизация для API
-        userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
-        userSpec2 = RequestSpecs.authAsUser(user2.getUsername(), user2.getPassword());
-
-        // 3) создание счетов (API)
-        senderAccount = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated());
-        recipientAccount = AccountSteps.createAccount(userSpec2, ResponseSpecs.entityWasCreated());
+    private CreateUserRequest getUser(int index) {
+        return SessionStorage.getUser(index);
     }
 
-    @Test
-        // Позитивный тест: перевод денег со своего счёта на счёт другого пользователя
-    void transferMoneyToAnotherAccountSuccess() {
-        // сумма, на которую пополним счёт отправителя
-        int initialAmount = generateValidAmount();
-        // сумма перевода (не больше остатка на счёте)
-        int transferAmount = ThreadLocalRandom.current().nextInt(1, initialAmount + 1);
+    private RequestSpecification getUserSpec(int index) {
+        CreateUserRequest user = getUser(index);
+        return RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
+    }
 
-        // 1) пополнить баланс отправителя (API) на initialAmount
-        DepositRequest depositPayload = DepositRequest.builder()
+    private AccountResponse createAccountForUser(int userIndex) {
+        return AccountSteps.createAccount(
+                getUserSpec(userIndex),
+                ResponseSpecs.entityWasCreated()
+        );
+    }
+
+    private void depositToSender(AccountResponse senderAccount, int amount) {
+        DepositRequest deposit = DepositRequest.builder()
                 .id(senderAccount.getId())
-                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
+                .balance(BigDecimal.valueOf(amount).setScale(2, RoundingMode.HALF_UP))
                 .build();
 
         AccountSteps.deposit(
-                userSpec,
+                getUserSpec(1),
                 ResponseSpecs.requestReturnsOK(),
-                depositPayload
+                deposit
+        );
+    }
+
+    private void performFirstTransfer(AccountResponse senderAccount,
+                                      AccountResponse recipientAccount,
+                                      int amount) {
+        BigDecimal amountBD = BigDecimal.valueOf(amount)
+                .setScale(2, RoundingMode.HALF_UP);
+
+        TransferRequest firstTransfer = TransferRequest.builder()
+                .senderAccountId(senderAccount.getId())
+                .receiverAccountId(recipientAccount.getId())
+                .amount(amountBD)
+                .build();
+
+        AccountSteps.transfer(
+                getUserSpec(1),
+                ResponseSpecs.requestReturnsOK(),
+                firstTransfer
+        );
+    }
+
+    // подготовка сценария для repeat-тестов:
+    // пополнение, первый перевод, открытие страницы и вкладки "Transfer Again"
+    private MoneyTransferPage prepareRepeatTransferScenario(int initialAmount,
+                                                            int firstTransferAmount,
+                                                            AccountResponse senderAccount,
+                                                            AccountResponse recipientAccount) {
+        depositToSender(senderAccount, initialAmount);
+        performFirstTransfer(senderAccount, recipientAccount, firstTransferAmount);
+        return new MoneyTransferPage()
+                .open()
+                .openRepeatTransferTab();
+    }
+
+    // базовый helper по номерам
+    private void assertBalances(String senderAccountNumber,
+                                String recipientAccountNumber,
+                                BigDecimal expectedSender,
+                                BigDecimal expectedRecipient) {
+        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
+                getUserSpec(1),
+                ResponseSpecs.requestReturnsOK(),
+                senderAccountNumber
         );
 
-        // 2) авторизация в UI через токен
-        authAsUser(user);
+        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
+                getUserSpec(2),
+                ResponseSpecs.requestReturnsOK(),
+                recipientAccountNumber
+        );
+
+        assertThat(updatedSender.getBalance()).isEqualByComparingTo(expectedSender);
+        assertThat(updatedRecipient.getBalance()).isEqualByComparingTo(expectedRecipient);
+    }
+
+    // удобный helper по AccountResponse
+    private void assertBalances(AccountResponse senderAccount,
+                                AccountResponse recipientAccount,
+                                BigDecimal expectedSender,
+                                BigDecimal expectedRecipient) {
+        assertBalances(
+                senderAccount.getAccountNumber(),
+                recipientAccount.getAccountNumber(),
+                expectedSender,
+                expectedRecipient
+        );
+    }
+
+    // Позитивный тест: перевод денег со своего счёта на счёт другого пользователя
+    @Test
+    @UserSession(2)
+    @Browsers({"chrome"})
+    @Device({"desktop"})
+    void transferMoneyToAnotherAccountSuccess() {
+        int initialAmount = generateValidAmount();
+        int transferAmount = ThreadLocalRandom.current().nextInt(1, initialAmount + 1);
+
+        AccountResponse senderAccount = createAccountForUser(1);
+        AccountResponse recipientAccount = createAccountForUser(2);
+
+        depositToSender(senderAccount, initialAmount);
 
         String senderAccountNumber = senderAccount.getAccountNumber();
         String recipientAccountNumber = recipientAccount.getAccountNumber();
 
-        // 3) перевод денег через UI + проверка алерта
         new MoneyTransferPage()
                 .open()
                 .transfer(senderAccountNumber, recipientAccountNumber, String.valueOf(transferAmount))
@@ -101,54 +165,30 @@ public class MoneyTransferUITest extends BaseUiTest {
                         BankAlert.TRANSFER_SUCCESS_PREFIX.getMessage()
                 );
 
-        // 4) API: баланс отправителя = initialAmount - transferAmount
-        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                senderAccountNumber
+        assertBalances(
+                senderAccount,
+                recipientAccount,
+                BigDecimal.valueOf(initialAmount - transferAmount),
+                BigDecimal.valueOf(transferAmount)
         );
-
-        // 5) API: баланс получателя = transferAmount
-        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
-                userSpec2,
-                ResponseSpecs.requestReturnsOK(),
-                recipientAccountNumber
-        );
-
-        assertThat(updatedSender.getBalance())
-                .isEqualByComparingTo(BigDecimal.valueOf(initialAmount - transferAmount));
-
-        assertThat(updatedRecipient.getBalance())
-                .isEqualByComparingTo(BigDecimal.valueOf(transferAmount));
     }
 
+    // Негативный тест: перевод без выбора исходного счёта
     @Test
-        // Негативный тест: перевод без выбора исходного счёта
+    @UserSession(2)
+    @Browsers({"chrome"})
+    @Device({"desktop"})
     void transferWithoutSourceAccount() {
-        // сумма, на которую пополним счёт отправителя
         int initialAmount = generateValidAmount();
-        // сумма перевода (не больше остатка на счёте)
         int transferAmount = ThreadLocalRandom.current().nextInt(1, initialAmount + 1);
 
-        // 1) пополнить баланс отправителя (API) на initialAmount
-        DepositRequest depositPayload = DepositRequest.builder()
-                .id(senderAccount.getId())
-                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
-                .build();
+        AccountResponse senderAccount = createAccountForUser(1);
+        AccountResponse recipientAccount = createAccountForUser(2);
 
-        AccountSteps.deposit(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                depositPayload
-        );
+        depositToSender(senderAccount, initialAmount);
 
-        // 2) авторизация в UI через токен
-        authAsUser(user);
-
-        String senderAccountNumber = senderAccount.getAccountNumber();
         String recipientAccountNumber = recipientAccount.getAccountNumber();
 
-        // 3) попытка перевода без выбора исходного счёта
         new MoneyTransferPage()
                 .open()
                 .submitWithoutSourceAccount(
@@ -159,52 +199,30 @@ public class MoneyTransferUITest extends BaseUiTest {
                         BankAlert.TRANSFER_FIELDS_NOT_CONFIRMED.getMessage()
                 );
 
-        // 4) API: балансы без изменений
-        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                senderAccountNumber
+        assertBalances(
+                senderAccount,
+                recipientAccount,
+                BigDecimal.valueOf(initialAmount),
+                BigDecimal.ZERO
         );
-        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
-                userSpec2,
-                ResponseSpecs.requestReturnsOK(),
-                recipientAccountNumber
-        );
-
-        assertThat(updatedSender.getBalance())
-                .isEqualByComparingTo(BigDecimal.valueOf(initialAmount));
-        assertThat(updatedRecipient.getBalance())
-                .isEqualByComparingTo(BigDecimal.ZERO);
     }
 
+    // Негативный тест: перевод без выбора счёта получателя
     @Test
-        // Негативный тест: перевод без выбора счёта получателя
+    @UserSession(2)
+    @Browsers({"chrome"})
+    @Device({"desktop"})
     void transferWithoutRecipientAccount() {
-        // сумма, на которую пополним счёт отправителя
         int initialAmount = generateValidAmount();
-        // сумма перевода (не больше остатка на счёте)
         int transferAmount = ThreadLocalRandom.current().nextInt(1, initialAmount + 1);
 
-        // 1) пополнить баланс отправителя (API) на initialAmount
-        DepositRequest depositPayload = DepositRequest.builder()
-                .id(senderAccount.getId())
-                .balance(BigDecimal.valueOf(initialAmount)
-                        .setScale(2, RoundingMode.HALF_UP))
-                .build();
+        AccountResponse senderAccount = createAccountForUser(1);
+        AccountResponse recipientAccount = createAccountForUser(2);
 
-        AccountSteps.deposit(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                depositPayload
-        );
-
-        // 2) авторизация в UI через токен
-        authAsUser(user);
+        depositToSender(senderAccount, initialAmount);
 
         String senderAccountNumber = senderAccount.getAccountNumber();
-        String recipientAccountNumber = recipientAccount.getAccountNumber();
 
-        // 3) попытка перевода без ввода счёта получателя
         new MoneyTransferPage()
                 .open()
                 .submitWithoutRecipientAccount(
@@ -215,49 +233,30 @@ public class MoneyTransferUITest extends BaseUiTest {
                         BankAlert.TRANSFER_FIELDS_NOT_CONFIRMED.getMessage()
                 );
 
-        // 4) API: балансы без изменений
-        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                senderAccountNumber
+        assertBalances(
+                senderAccount,
+                recipientAccount,
+                BigDecimal.valueOf(initialAmount),
+                BigDecimal.ZERO
         );
-        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
-                userSpec2,
-                ResponseSpecs.requestReturnsOK(),
-                recipientAccountNumber
-        );
-
-        assertThat(updatedSender.getBalance())
-                .isEqualByComparingTo(BigDecimal.valueOf(initialAmount));
-        assertThat(updatedRecipient.getBalance())
-                .isEqualByComparingTo(BigDecimal.ZERO);
     }
 
+    // Негативный тест: перевод с пустым полем "Сумма"
     @Test
-        // Негативный тест: перевод с пустым полем "Сумма"
+    @UserSession(2)
+    @Browsers({"chrome"})
+    @Device({"desktop"})
     void transferWithEmptyAmount() {
-        // сумма, на которую пополним счёт отправителя
         int initialAmount = generateValidAmount();
 
-        // 1) пополнить баланс отправителя (API) на initialAmount
-        DepositRequest depositPayload = DepositRequest.builder()
-                .id(senderAccount.getId())
-                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
-                .build();
+        AccountResponse senderAccount = createAccountForUser(1);
+        AccountResponse recipientAccount = createAccountForUser(2);
 
-        AccountSteps.deposit(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                depositPayload
-        );
-
-        // 2) авторизация в UI через токен
-        authAsUser(user);
+        depositToSender(senderAccount, initialAmount);
 
         String senderAccountNumber = senderAccount.getAccountNumber();
         String recipientAccountNumber = recipientAccount.getAccountNumber();
 
-        // 3) попытка перевода с пустым полем "Сумма"
         new MoneyTransferPage()
                 .open()
                 .submitWithEmptyAmount(
@@ -268,49 +267,28 @@ public class MoneyTransferUITest extends BaseUiTest {
                         BankAlert.TRANSFER_FIELDS_NOT_CONFIRMED.getMessage()
                 );
 
-        // 4) API: балансы без изменений
-        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                senderAccountNumber
+        assertBalances(
+                senderAccount,
+                recipientAccount,
+                BigDecimal.valueOf(initialAmount),
+                BigDecimal.ZERO
         );
-        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
-                userSpec2,
-                ResponseSpecs.requestReturnsOK(),
-                recipientAccountNumber
-        );
-
-        assertThat(updatedSender.getBalance())
-                .isEqualByComparingTo(BigDecimal.valueOf(initialAmount));
-        assertThat(updatedRecipient.getBalance())
-                .isEqualByComparingTo(BigDecimal.ZERO);
     }
 
+    // Негативный тест: перевод на несуществующий счёт
     @Test
-        // Негативный тест: перевод на несуществующий счёт
+    @UserSession(2)
+    @Browsers({"chrome"})
+    @Device({"desktop"})
     void transferToNonexistentAccount() {
-        // сумма, на которую пополним счёт отправителя
         int initialAmount = generateValidAmount();
 
-        // 1) пополнить баланс отправителя (API) на initialAmount
-        DepositRequest depositPayload = DepositRequest.builder()
-                .id(senderAccount.getId())
-                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
-                .build();
+        AccountResponse senderAccount = createAccountForUser(1);
+        AccountResponse recipientAccount = createAccountForUser(2);
 
-        AccountSteps.deposit(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                depositPayload
-        );
-
-        // 2) авторизация в UI через токен
-        authAsUser(user);
+        depositToSender(senderAccount, initialAmount);
 
         String senderAccountNumber = senderAccount.getAccountNumber();
-        String recipientAccountNumber = recipientAccount.getAccountNumber();
-
-        // 3) попытка перевода на несуществующий счёт
         String nonexistentAccountNumber = "ACC1000200";
 
         new MoneyTransferPage()
@@ -324,49 +302,30 @@ public class MoneyTransferUITest extends BaseUiTest {
                         BankAlert.TRANSFER_ACCOUNT_NOT_FOUND.getMessage()
                 );
 
-        // 4) API: балансы без изменений
-        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                senderAccountNumber
+        assertBalances(
+                senderAccount,
+                recipientAccount,
+                BigDecimal.valueOf(initialAmount),
+                BigDecimal.ZERO
         );
-        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
-                userSpec2,
-                ResponseSpecs.requestReturnsOK(),
-                recipientAccountNumber
-        );
-
-        assertThat(updatedSender.getBalance())
-                .isEqualByComparingTo(BigDecimal.valueOf(initialAmount));
-        assertThat(updatedRecipient.getBalance())
-                .isEqualByComparingTo(BigDecimal.ZERO);
     }
 
+    // Негативный тест: перевод без активации чек-бокса подтверждения
     @Test
-        // Негативный тест: перевод без активации чек-бокса подтверждения
+    @UserSession(2)
+    @Browsers({"chrome"})
+    @Device({"desktop"})
     void transferWithoutConfirm() {
-        // сумма перевода
         int amount = generateValidAmount();
 
-        // 1) пополнить баланс отправителя (API) на сумму перевода
-        var deposit = DepositRequest.builder()
-                .id(senderAccount.getId())
-                .balance(BigDecimal.valueOf(amount).setScale(2, RoundingMode.HALF_UP))
-                .build();
+        AccountResponse senderAccount = createAccountForUser(1);
+        AccountResponse recipientAccount = createAccountForUser(2);
 
-        AccountSteps.deposit(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                deposit
-        );
-
-        // 2) авторизация в UI через токен
-        authAsUser(user);
+        depositToSender(senderAccount, amount);
 
         String senderAccountNumber = senderAccount.getAccountNumber();
         String recipientAccountNumber = recipientAccount.getAccountNumber();
 
-        // 3) перевод без подтверждения через PageObject + проверка алерта
         new MoneyTransferPage()
                 .open()
                 .fillFormAndSendWithoutConfirm(
@@ -378,51 +337,31 @@ public class MoneyTransferUITest extends BaseUiTest {
                         BankAlert.TRANSFER_FIELDS_NOT_CONFIRMED.getMessage()
                 );
 
-        // 4) API: балансы без изменений
-        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                senderAccountNumber
+        assertBalances(
+                senderAccount,
+                recipientAccount,
+                BigDecimal.valueOf(amount),
+                BigDecimal.ZERO
         );
-        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
-                userSpec2,
-                ResponseSpecs.requestReturnsOK(),
-                recipientAccountNumber
-        );
-
-        assertThat(updatedSender.getBalance())
-                .isEqualByComparingTo(BigDecimal.valueOf(amount));
-        assertThat(updatedRecipient.getBalance())
-                .isEqualByComparingTo(BigDecimal.ZERO);
     }
 
+    // Негативный тест: перевод суммы больше доступного баланса - ответ от бека
     @Test
-        // Негативный тест: перевод суммы больше доступного баланса - ответ от бека
+    @UserSession(2)
+    @Browsers({"chrome"})
+    @Device({"desktop"})
     void transferAmountGreaterThanBalanceError() {
-        // сумма, на которую пополним счёт отправителя
         int initialAmount = generateValidAmount();
-        // сумма перевода (строго больше остатка на счёте)
         int transferAmount = initialAmount + ThreadLocalRandom.current().nextInt(1, initialAmount + 1);
 
-        // 1) пополнить баланс отправителя (API) на initialAmount
-        DepositRequest depositPayload = DepositRequest.builder()
-                .id(senderAccount.getId())
-                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
-                .build();
+        AccountResponse senderAccount = createAccountForUser(1);
+        AccountResponse recipientAccount = createAccountForUser(2);
 
-        AccountSteps.deposit(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                depositPayload
-        );
-
-        // 2) авторизация в UI через токен
-        authAsUser(user);
+        depositToSender(senderAccount, initialAmount);
 
         String senderAccountNumber = senderAccount.getAccountNumber();
         String recipientAccountNumber = recipientAccount.getAccountNumber();
 
-        // 3) попытка перевода суммы больше баланса через UI + проверка алерта об ошибке
         new MoneyTransferPage()
                 .open()
                 .transfer(senderAccountNumber, recipientAccountNumber, String.valueOf(transferAmount))
@@ -430,65 +369,34 @@ public class MoneyTransferUITest extends BaseUiTest {
                         BankAlert.TRANSFER_INVALID_INSUFFICIENT_FUNDS.getMessage()
                 );
 
-        // 4) API: баланс отправителя не изменился и равен initialAmount
-        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                senderAccountNumber
+        assertBalances(
+                senderAccount,
+                recipientAccount,
+                BigDecimal.valueOf(initialAmount),
+                BigDecimal.ZERO
         );
-
-        // 5) API: баланс получателя = 0
-        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
-                userSpec2,
-                ResponseSpecs.requestReturnsOK(),
-                recipientAccountNumber
-        );
-
-        assertThat(updatedSender.getBalance())
-                .isEqualByComparingTo(BigDecimal.valueOf(initialAmount));
-
-        assertThat(updatedRecipient.getBalance())
-                .isEqualByComparingTo(BigDecimal.ZERO);
     }
 
+    // Позитивный тест: повторный перевод денег одному и тому же пользователю с той же суммой
     @Test
-        // Позитивный тест: повторный перевод денег одному и тому же пользователю с той же суммой
+    @UserSession(2)
+    @Browsers({"chrome"})
+    @Device({"desktop"})
     void repeatTransferToSameUserSuccess() {
-        // сумма одного перевода
         int transferAmount = generateAmountForTwoTransfersWithinDepositLimit();
-        // общий баланс отправителя для двух одинаковых переводов
         int initialAmount = transferAmount * 2;
 
-        // 1) пополнить баланс отправителя (API) на initialAmount
-        DepositRequest deposit = DepositRequest.builder()
-                .id(senderAccount.getId())
-                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
-                .build();
+        AccountResponse senderAccount = createAccountForUser(1);
+        AccountResponse recipientAccount = createAccountForUser(2);
 
-        AccountSteps.deposit(userSpec, ResponseSpecs.requestReturnsOK(), deposit);
+        MoneyTransferPage moneyTransferPage = prepareRepeatTransferScenario(
+                initialAmount,
+                transferAmount,
+                senderAccount,
+                recipientAccount
+        );
 
-        // 1.1 подготовить сумму для первого перевода
-        BigDecimal transferAmountBD = BigDecimal.valueOf(transferAmount)
-                .setScale(2, RoundingMode.HALF_UP);
-
-        // 1.2 собрать запрос первого перевода
-        TransferRequest firstTransfer = TransferRequest.builder()
-                .senderAccountId(senderAccount.getId())
-                .receiverAccountId(recipientAccount.getId())
-                .amount(transferAmountBD)
-                .build();
-
-        // 1.3 выполнить первый перевод (ожидаем 200 OK)
-        AccountSteps.transfer(userSpec, ResponseSpecs.requestReturnsOK(), firstTransfer);
-
-        // 2) авторизация в UI через токен
-        authAsUser(user);
-
-        MoneyTransferPage moneyTransferPage = new MoneyTransferPage().open();
-
-        // 3) повторный перевод через UI
         moneyTransferPage
-                .openRepeatTransferTab()
                 .openRepeatTransferModal(transferAmount)
                 .fillRepeatTransferFormAndSubmit(String.valueOf(senderAccount.getId()), transferAmount)
                 .checkRepeatSuccessAlert(
@@ -497,77 +405,35 @@ public class MoneyTransferUITest extends BaseUiTest {
                         BankAlert.TRANSFER_REPEAT_SUCCESS_PREFIX.getMessage()
                 );
 
-        String senderAccountNumber = senderAccount.getAccountNumber();
-        String recipientAccountNumber = recipientAccount.getAccountNumber();
-
-        // 4) API: финальные балансы — у отправителя 0, у получателя transferAmount * 2
-        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                senderAccountNumber
+        assertBalances(
+                senderAccount,
+                recipientAccount,
+                BigDecimal.ZERO,
+                BigDecimal.valueOf(transferAmount * 2L)
         );
-
-        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
-                userSpec2,
-                ResponseSpecs.requestReturnsOK(),
-                recipientAccountNumber
-        );
-
-        assertThat(updatedSender.getBalance())
-                .isEqualByComparingTo(BigDecimal.ZERO);
-
-        assertThat(updatedRecipient.getBalance())
-                .isEqualByComparingTo(BigDecimal.valueOf(transferAmount * 2L));
     }
 
+    // Позитивный тест: повторный перевод денег одному и тому же пользователю с изменением суммы
     @Test
-// Позитивный тест: повторный перевод денег одному и тому же пользователю с изменением суммы
+    @UserSession(2)
+    @Browsers({"chrome"})
+    @Device({"desktop"})
     void repeatTransferToSameUserChangedAmountSuccess() {
-        // сумма первого перевода (минимум 2, чтобы можно было изменить сумму)
         int firstTransferAmount = generateFirstTransferAmountWithinDepositLimit();
-        // сумма повторного перевода (меньше первой и так, чтобы first + second ≤ 5000)
         int secondTransferAmount = generateSecondTransferAmountWithinDepositLimit(firstTransferAmount);
-        // общий баланс отправителя: хватает на оба перевода
         int initialAmount = firstTransferAmount + secondTransferAmount;
 
-        // 1) пополнить баланс отправителя (API) на initialAmount
-        DepositRequest deposit = DepositRequest.builder()
-                .id(senderAccount.getId())
-                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
-                .build();
+        AccountResponse senderAccount = createAccountForUser(1);
+        AccountResponse recipientAccount = createAccountForUser(2);
 
-        AccountSteps.deposit(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                deposit
+        MoneyTransferPage moneyTransferPage = prepareRepeatTransferScenario(
+                initialAmount,
+                firstTransferAmount,
+                senderAccount,
+                recipientAccount
         );
 
-        // 1.1 подготовить сумму для первого перевода
-        BigDecimal firstTransferAmountBD = BigDecimal.valueOf(firstTransferAmount)
-                .setScale(2, RoundingMode.HALF_UP);
-
-        // 1.2 собрать запрос первого перевода
-        TransferRequest firstTransfer = TransferRequest.builder()
-                .senderAccountId(senderAccount.getId())
-                .receiverAccountId(recipientAccount.getId())
-                .amount(firstTransferAmountBD)
-                .build();
-
-        // 1.3 выполнить первый перевод (ожидаем 200 OK)
-        AccountSteps.transfer(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                firstTransfer
-        );
-
-        // 2) авторизация в UI через токен
-        authAsUser(user);
-
-        MoneyTransferPage moneyTransferPage = new MoneyTransferPage().open();
-
-        // 3) повторный перевод через UI с изменением суммы
         moneyTransferPage
-                .openRepeatTransferTab()
                 .openRepeatTransferModal(firstTransferAmount)
                 .fillRepeatTransferFormWithNewAmountAndSubmit(
                         String.valueOf(senderAccount.getId()),
@@ -579,421 +445,187 @@ public class MoneyTransferUITest extends BaseUiTest {
                         BankAlert.TRANSFER_REPEAT_SUCCESS_PREFIX.getMessage()
                 );
 
-        String senderAccountNumber = senderAccount.getAccountNumber();
-        String recipientAccountNumber = recipientAccount.getAccountNumber();
-
-        // 4) API: финальные балансы — у отправителя 0, у получателя firstTransferAmount + secondTransferAmount
-        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                senderAccountNumber
+        assertBalances(
+                senderAccount,
+                recipientAccount,
+                BigDecimal.ZERO,
+                BigDecimal.valueOf(firstTransferAmount + secondTransferAmount)
         );
-
-        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
-                userSpec2,
-                ResponseSpecs.requestReturnsOK(),
-                recipientAccountNumber
-        );
-
-        assertThat(updatedSender.getBalance())
-                .isEqualByComparingTo(BigDecimal.ZERO);
-
-        assertThat(updatedRecipient.getBalance())
-                .isEqualByComparingTo(
-                        BigDecimal.valueOf(firstTransferAmount + secondTransferAmount)
-                );
     }
 
+    // Позитивный тест: отмена повторного перевода
     @Test
-// Позитивный тест: отмена повторного перевода
+    @UserSession(2)
+    @Browsers({"chrome"})
+    @Device({"desktop"})
     void cancelRepeatTransfer() {
-        // сумма первого перевода
         int amount = generateAmountForTwoTransfersWithinDepositLimit();
-        // общий баланс отправителя для двух одинаковых переводов
         int initialAmount = amount * 2;
 
-        // 1) пополнить баланс отправителя (API) на initialAmount
-        DepositRequest deposit = DepositRequest.builder()
-                .id(senderAccount.getId())
-                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
-                .build();
+        AccountResponse senderAccount = createAccountForUser(1);
+        AccountResponse recipientAccount = createAccountForUser(2);
 
-        AccountSteps.deposit(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                deposit
+        MoneyTransferPage moneyTransferPage = prepareRepeatTransferScenario(
+                initialAmount,
+                amount,
+                senderAccount,
+                recipientAccount
         );
 
-        // 1.1 подготовить сумму для первого перевода
-        BigDecimal amountBD = BigDecimal.valueOf(amount)
-                .setScale(2, RoundingMode.HALF_UP);
-
-        // 1.2 собрать запрос первого перевода
-        TransferRequest firstTransfer = TransferRequest.builder()
-                .senderAccountId(senderAccount.getId())
-                .receiverAccountId(recipientAccount.getId())
-                .amount(amountBD)
-                .build();
-
-        // 1.3 выполнить первый перевод (ожидаем 200 OK)
-        AccountSteps.transfer(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                firstTransfer
-        );
-
-        // 2) авторизация в UI через токен
-        authAsUser(user);
-
-        MoneyTransferPage moneyTransferPage = new MoneyTransferPage().open();
-
-        // 3) открыть вкладку повторного перевода и отменить повтор
         moneyTransferPage
-                .openRepeatTransferTab()
                 .openRepeatTransferModal(amount)
                 .cancelRepeatTransfer(String.valueOf(senderAccount.getId()));
 
-        String senderAccountNumber = senderAccount.getAccountNumber();
-        String recipientAccountNumber = recipientAccount.getAccountNumber();
-
-        // 4) API: финальные балансы — у отправителя amount, у получателя amount
-        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                senderAccountNumber
-        );
-
-        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
-                userSpec2,
-                ResponseSpecs.requestReturnsOK(),
-                recipientAccountNumber
-        );
-
         BigDecimal expected = BigDecimal.valueOf(amount);
 
-        assertThat(updatedSender.getBalance())
-                .isEqualByComparingTo(expected);
-
-        assertThat(updatedRecipient.getBalance())
-                .isEqualByComparingTo(expected);
+        assertBalances(
+                senderAccount,
+                recipientAccount,
+                expected,
+                expected
+        );
     }
 
+    // Негативный тест: повторный перевод без выбора исходного счёта
     @Test
-// Негативный тест: повторный перевод без выбора исходного счёта
+    @UserSession(2)
+    @Browsers({"chrome"})
+    @Device({"desktop"})
     void repeatTransferWithoutSourceAccount() {
-        // сумма первого перевода
         int amount = generateAmountForTwoTransfersWithinDepositLimit();
-        // общий баланс отправителя для двух одинаковых переводов
         int initialAmount = amount * 2;
 
-        // 1) пополнить баланс отправителя (API) на initialAmount
-        DepositRequest deposit = DepositRequest.builder()
-                .id(senderAccount.getId())
-                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
-                .build();
+        AccountResponse senderAccount = createAccountForUser(1);
+        AccountResponse recipientAccount = createAccountForUser(2);
 
-        AccountSteps.deposit(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                deposit
+        MoneyTransferPage moneyTransferPage = prepareRepeatTransferScenario(
+                initialAmount,
+                amount,
+                senderAccount,
+                recipientAccount
         );
 
-        // 1.1 подготовить сумму
-        BigDecimal amountBD = BigDecimal.valueOf(amount)
-                .setScale(2, RoundingMode.HALF_UP);
-
-        // 1.2 собрать запрос первого перевода
-        TransferRequest firstTransfer = TransferRequest.builder()
-                .senderAccountId(senderAccount.getId())
-                .receiverAccountId(recipientAccount.getId())
-                .amount(amountBD)
-                .build();
-
-        // 1.3 выполнить первый перевод (ожидаем 200 OK)
-        AccountSteps.transfer(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                firstTransfer
-        );
-
-        // 2) авторизация в UI через токен
-        authAsUser(user);
-
-        MoneyTransferPage moneyTransferPage = new MoneyTransferPage().open();
-
-        // 3) попытка повторного перевода без выбора исходного счёта
         moneyTransferPage
-                .openRepeatTransferTab()
                 .openRepeatTransferModal(amount)
                 .submitRepeatWithoutSourceAccount();
 
-        // 4) закрыть окно повторного перевода
         moneyTransferPage.closeRepeatTransferModal();
 
-        String senderAccountNumber = senderAccount.getAccountNumber();
-        String recipientAccountNumber = recipientAccount.getAccountNumber();
-
-        // 5) API: финальные балансы — у отправителя amount, у получателя amount
-        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                senderAccountNumber
-        );
-
-        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
-                userSpec2,
-                ResponseSpecs.requestReturnsOK(),
-                recipientAccountNumber
-        );
-
         BigDecimal expected = BigDecimal.valueOf(amount);
 
-        assertThat(updatedSender.getBalance())
-                .isEqualByComparingTo(expected);
-        assertThat(updatedRecipient.getBalance())
-                .isEqualByComparingTo(expected);
+        assertBalances(
+                senderAccount,
+                recipientAccount,
+                expected,
+                expected
+        );
     }
 
+    // Негативный тест: повторный перевод с пустым полем "Сумма"
     @Test
-// Негативный тест: повторный перевод с пустым полем "Сумма"
+    @UserSession(2)
+    @Browsers({"chrome"})
+    @Device({"desktop"})
     void repeatTransferWithEmptyAmount() {
-        // сумма первого перевода
         int amount = generateAmountForTwoTransfersWithinDepositLimit();
-        // общий баланс отправителя для двух одинаковых переводов
         int initialAmount = amount * 2;
 
-        // 1) пополнить баланс отправителя (API) на initialAmount
-        DepositRequest deposit = DepositRequest.builder()
-                .id(senderAccount.getId())
-                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
-                .build();
+        AccountResponse senderAccount = createAccountForUser(1);
+        AccountResponse recipientAccount = createAccountForUser(2);
 
-        AccountSteps.deposit(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                deposit
+        MoneyTransferPage moneyTransferPage = prepareRepeatTransferScenario(
+                initialAmount,
+                amount,
+                senderAccount,
+                recipientAccount
         );
 
-        // 1.1 подготовить сумму
-        BigDecimal amountBD = BigDecimal.valueOf(amount)
-                .setScale(2, RoundingMode.HALF_UP);
-
-        // 1.2 собрать запрос первого перевода
-        TransferRequest firstTransfer = TransferRequest.builder()
-                .senderAccountId(senderAccount.getId())
-                .receiverAccountId(recipientAccount.getId())
-                .amount(amountBD)
-                .build();
-
-        // 1.3 выполнить первый перевод (ожидаем 200 OK)
-        AccountSteps.transfer(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                firstTransfer
-        );
-
-        // 2) авторизация в UI через токен
-        authAsUser(user);
-
-        MoneyTransferPage moneyTransferPage = new MoneyTransferPage().open();
-
-        // 3) попытка повторного перевода с пустой суммой
         moneyTransferPage
-                .openRepeatTransferTab()
                 .openRepeatTransferModal(amount)
-                .submitRepeatWithEmptyAmount(String.valueOf(senderAccount.getId()));
-
-        // 4) ОР: появился alert с текстом "Transfer failed: Please try again"
-        Alert alert = switchTo().alert();
-        String alertText = alert.getText();
-        assertThat(alertText)
-                .contains(BankAlert.TRANSFER_FAILED_RETRY.getMessage());
-        alert.accept();
-
-        String senderAccountNumber = senderAccount.getAccountNumber();
-        String recipientAccountNumber = recipientAccount.getAccountNumber();
-
-        // 5) API: финальные балансы — у отправителя amount, у получателя amount
-        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                senderAccountNumber
-        );
-
-        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
-                userSpec2,
-                ResponseSpecs.requestReturnsOK(),
-                recipientAccountNumber
-        );
+                .submitRepeatWithEmptyAmount(String.valueOf(senderAccount.getId()))
+                .checkAlertMessageAndAccept(BankAlert.TRANSFER_FAILED_RETRY.getMessage());
 
         BigDecimal expected = BigDecimal.valueOf(amount);
 
-        assertThat(updatedSender.getBalance())
-                .isEqualByComparingTo(expected);
-        assertThat(updatedRecipient.getBalance())
-                .isEqualByComparingTo(expected);
+        assertBalances(
+                senderAccount,
+                recipientAccount,
+                expected,
+                expected
+        );
     }
 
+    // Негативный тест: повторный перевод денег без активированного чек-бокса "Подтвердите правильность данных"
     @Test
-// Негативный тест: повторный перевод денег без активированного чек-бокса "Подтвердите правильность данных"
+    @UserSession(2)
+    @Browsers({"chrome"})
+    @Device({"desktop"})
     void repeatTransferWithoutConfirm() {
-        // сумма первого перевода
         int amount = generateAmountForTwoTransfersWithinDepositLimit();
-        // общий баланс отправителя для двух одинаковых переводов
         int initialAmount = amount * 2;
 
-        // 1) пополнить баланс отправителя (API) на initialAmount
-        DepositRequest deposit = DepositRequest.builder()
-                .id(senderAccount.getId())
-                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
-                .build();
+        AccountResponse senderAccount = createAccountForUser(1);
+        AccountResponse recipientAccount = createAccountForUser(2);
 
-        AccountSteps.deposit(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                deposit
+        MoneyTransferPage moneyTransferPage = prepareRepeatTransferScenario(
+                initialAmount,
+                amount,
+                senderAccount,
+                recipientAccount
         );
 
-        // 1.1 подготовить сумму
-        BigDecimal amountBD = BigDecimal.valueOf(amount)
-                .setScale(2, RoundingMode.HALF_UP);
-
-        // 1.2 собрать запрос первого перевода
-        TransferRequest firstTransfer = TransferRequest.builder()
-                .senderAccountId(senderAccount.getId())
-                .receiverAccountId(recipientAccount.getId())
-                .amount(amountBD)
-                .build();
-
-        // 1.3 выполнить первый перевод (ожидаем 200 OK)
-        AccountSteps.transfer(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                firstTransfer
-        );
-
-        // 2) авторизация в UI через токен
-        authAsUser(user);
-
-        MoneyTransferPage moneyTransferPage = new MoneyTransferPage().open();
-
-        // 3) попытка повторного перевода без чекбокса подтверждения
         moneyTransferPage
-                .openRepeatTransferTab()
                 .openRepeatTransferModal(amount)
                 .submitRepeatWithoutConfirm(String.valueOf(senderAccount.getId()), amount);
 
-        // 4) закрыть окно повторного перевода
         moneyTransferPage.closeRepeatTransferModal();
-
-        String senderAccountNumber = senderAccount.getAccountNumber();
-        String recipientAccountNumber = recipientAccount.getAccountNumber();
-
-        // 5) API: финальные балансы — у отправителя amount, у получателя amount
-        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                senderAccountNumber
-        );
-
-        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
-                userSpec2,
-                ResponseSpecs.requestReturnsOK(),
-                recipientAccountNumber
-        );
 
         BigDecimal expected = BigDecimal.valueOf(amount);
 
-        assertThat(updatedSender.getBalance())
-                .isEqualByComparingTo(expected);
-        assertThat(updatedRecipient.getBalance())
-                .isEqualByComparingTo(expected);
+        assertBalances(
+                senderAccount,
+                recipientAccount,
+                expected,
+                expected
+        );
     }
 
+    // Негативный тест: повторный перевод суммы больше доступного баланса
     @Test
-// Негативный тест: повторный перевод суммы больше доступного баланса
+    @UserSession(2)
+    @Browsers({"chrome"})
+    @Device({"desktop"})
     void repeatTransferOverBalance() {
-        // сумма первого перевода
         int amount = generateAmountForTwoTransfersWithinDepositLimit();
-        // общий баланс отправителя для двух переводов
         int initialAmount = amount * 2;
 
-        // 1) пополнить баланс отправителя (API) на initialAmount
-        DepositRequest deposit = DepositRequest.builder()
-                .id(senderAccount.getId())
-                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
-                .build();
+        AccountResponse senderAccount = createAccountForUser(1);
+        AccountResponse recipientAccount = createAccountForUser(2);
 
-        AccountSteps.deposit(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                deposit
+        MoneyTransferPage moneyTransferPage = prepareRepeatTransferScenario(
+                initialAmount,
+                amount,
+                senderAccount,
+                recipientAccount
         );
 
-        // 1.1 подготовить сумму для первого перевода
-        BigDecimal amountBD = BigDecimal.valueOf(amount)
-                .setScale(2, RoundingMode.HALF_UP);
-
-        // 1.2 собрать запрос первого перевода
-        TransferRequest firstTransfer = TransferRequest.builder()
-                .senderAccountId(senderAccount.getId())
-                .receiverAccountId(recipientAccount.getId())
-                .amount(amountBD)
-                .build();
-
-        // 1.3 выполнить первый перевод (ожидаем 200 OK)
-        AccountSteps.transfer(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                firstTransfer
-        );
-
-        // 2) авторизация в UI через токен
-        authAsUser(user);
-
-        MoneyTransferPage moneyTransferPage = new MoneyTransferPage().open();
-
-        // 3) подготовить сумму повторного перевода больше доступного баланса (amount)
         int overAmount = amount + ThreadLocalRandom.current().nextInt(1, amount + 1);
 
-        // 4) попытка повторного перевода суммы > баланса
         moneyTransferPage
-                .openRepeatTransferTab()
                 .openRepeatTransferModal(amount)
                 .fillRepeatTransferFormWithNewAmountAndSubmit(
                         String.valueOf(senderAccount.getId()),
                         overAmount
-                );
-
-        // 5) ОР: появился alert об ошибке
-        Alert alert = switchTo().alert();
-        String alertText = alert.getText();
-        assertThat(alertText)
-                .contains(BankAlert.TRANSFER_FAILED_RETRY.getMessage());
-        alert.accept();
-
-        String senderAccountNumber = senderAccount.getAccountNumber();
-        String recipientAccountNumber = recipientAccount.getAccountNumber();
-
-        // 6) API: финальные балансы — у отправителя amount, у получателя amount
-        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
-                userSpec,
-                ResponseSpecs.requestReturnsOK(),
-                senderAccountNumber
-        );
-
-        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
-                userSpec2,
-                ResponseSpecs.requestReturnsOK(),
-                recipientAccountNumber
-        );
+                )
+                .checkAlertMessageAndAccept(BankAlert.TRANSFER_FAILED_RETRY.getMessage());
 
         BigDecimal expected = BigDecimal.valueOf(amount);
 
-        assertThat(updatedSender.getBalance())
-                .isEqualByComparingTo(expected);
-        assertThat(updatedRecipient.getBalance())
-                .isEqualByComparingTo(expected);
+        assertBalances(
+                senderAccount,
+                recipientAccount,
+                expected,
+                expected
+        );
     }
-
 }
