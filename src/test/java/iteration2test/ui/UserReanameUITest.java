@@ -1,457 +1,150 @@
 package iteration2test.ui;
 
-import com.codeborne.selenide.Configuration;
-import models.CreateUserRequest;
-import models.LoginUserRequest;
-import org.junit.jupiter.api.BeforeAll;
+import api.generators.RandomModelGenerator;
+import api.models.CreateUserRequest;
+import api.models.UpdateProfileRequest;
+import api.requests.steps.AdminSteps;
+import api.requests.steps.ProfileSteps;
+import api.specs.RequestSpecs;
+import api.specs.ResponseSpecs;
+import io.restassured.specification.RequestSpecification;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.openqa.selenium.Alert;
-import org.openqa.selenium.chrome.ChromeOptions;
-import requests.skelethon.Endpoint;
-import requests.skelethon.requester.CrudRequester;
-import requests.steps.AdminSteps;
-import specs.RequestSpecs;
-import specs.ResponseSpecs;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import ui.pages.EditProfilePage;
 
-import java.util.Map;
-
-import static com.codeborne.selenide.Condition.*;
-import static com.codeborne.selenide.Selenide.*;
-import static com.codeborne.selenide.WebDriverConditions.urlContaining;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class UserReanameUITest {
-    @BeforeAll
-    static void setupSelenoid() {
-        Configuration.remote = "http://localhost:4444/wd/hub";
-        Configuration.baseUrl = "http://localhost:3000";          // Origin = localhost
-        Configuration.browser = "chrome";
-        Configuration.browserSize = "1920x1080";
-
-        String hostIp = "192.168.1.65";                            // мой IPv4 Wi-Fi
-        ChromeOptions chrome = new ChromeOptions()
-                .addArguments("--host-resolver-rules=MAP localhost " + hostIp);
-        chrome.setCapability("selenoid:options", Map.of("enableVNC", true, "enableLog", true));
-        Configuration.browserCapabilities = chrome;
-    }
+public class UserReanameUITest extends BaseUiTest {
 
     private CreateUserRequest user;
-    private Long accountId;
+    private RequestSpecification userSpec;
 
-    @Test
-// Позитивный тест: первичная установка имени
-    void setNameFirstTime() {
-        String name = "Keys Jons";
+    private String generateValidFullName() {
+        // генерация имени
+        UpdateProfileRequest payload = RandomModelGenerator.generate(UpdateProfileRequest.class);
+        return payload.getName();
+    }
+
+    @BeforeEach
+    void setUpUserAndAuth() {
         // 1) пользователь (API)
-        CreateUserRequest user = AdminSteps.createUser();
-
+        user = AdminSteps.createUser();
         // 2) авторизация для API
-        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
-
-        // 3) логин - токен в localStorage (для UI)
-        String authHeader = new CrudRequester(
-                RequestSpecs.unauthSpec(), Endpoint.LOGIN, ResponseSpecs.requestReturnsOK())
-                .post(LoginUserRequest.builder()
-                        .username(user.getUsername())
-                        .password(user.getPassword())
-                        .build())
-                .extract()
-                .header("Authorization");
-
-        // 4) перейти на изменение профиля
-        open("/");
-        executeJavaScript("localStorage.setItem('authToken', arguments[0])", authHeader);
-        open("/edit-profile");
-
-        // 5) выбрать поле новое имя и ввести имя
-        $("input[placeholder='Enter new name']").shouldBe(visible, enabled).setValue(name);
-
-        // 6) нажать на save changes
-        $$("button").findBy(text("Save Changes")).shouldBe(visible, enabled).click();
-
-        // 7) ОР: сообщение об успехе
-        Alert alert = switchTo().alert();
-        String alertText = alert.getText();
-        assertThat(alertText).contains("Name updated successfully");
-        alert.accept();
-
-        // 8) проверка имени в API
-        String actualName = io.restassured.RestAssured.given()
-                .spec(userSpec)
-                .when()
-                .get("customer/profile")
-                .then()
-                .statusCode(200)
-                .extract()
-                .jsonPath()
-                .getString("name");
-
-        assertThat(actualName).isEqualTo(name);
+        userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
+        // 3) авторизация в UI через токен
+        authAsUser(user);
     }
 
     @Test
-// Позитивный тест: повторное изменение имени на другое
+        // Позитивный тест: первичная установка имени
+    void setNameFirstTime() {
+        String expectedName = generateValidFullName();
+        // 1) действие на UI: изменение имени + проверка алерта
+        new EditProfilePage()
+                .open()
+                .edit(expectedName)
+                .checkAlertMessageAndAccept(BankAlert.PROFILE_UPDATED_SUCCESSFULLY.getMessage());
+
+        // 2) проверка результата через API
+        var customer = ProfileSteps.getProfile(userSpec, ResponseSpecs.requestReturnsOK());
+        assertThat(customer.getName()).isEqualTo(expectedName);
+    }
+
+    @Test
+// Позитивный тест: повторное изменение имени на другое,
+// при уже установленном имени в профиле (через API)
     void updateNameSecondTime() {
-        String firstName = "Keys Jons";
-        String secondName = "Jonses Volk";
+        String firstName = generateValidFullName();
+        String secondName;
+        do {
+            secondName = generateValidFullName();
+        } while (secondName.equals(firstName));
 
-        // 1) пользователь (API)
-        CreateUserRequest user = AdminSteps.createUser();
+        // 1) первичная установка имени через API
+        UpdateProfileRequest apiPayload = new UpdateProfileRequest(firstName);
+        ProfileSteps.updateProfile(userSpec, ResponseSpecs.requestReturnsOK(), apiPayload);
 
-        // 2) авторизация для API
-        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
+        // 2) изменение имени через UI + проверка алерта
+        new EditProfilePage()
+                .open()
+                .edit(secondName)
+                .checkAlertMessageAndAccept(BankAlert.PROFILE_UPDATED_SUCCESSFULLY.getMessage());
 
-        // 3) логин - токен в localStorage (для UI)
-        String authHeader = new CrudRequester(
-                RequestSpecs.unauthSpec(), Endpoint.LOGIN, ResponseSpecs.requestReturnsOK())
-                .post(LoginUserRequest.builder()
-                        .username(user.getUsername())
-                        .password(user.getPassword())
-                        .build())
-                .extract()
-                .header("Authorization");
-
-        // 4) перейти на изменение профиля
-        open("/");
-        executeJavaScript("localStorage.setItem('authToken', arguments[0])", authHeader);
-        open("/edit-profile");
-
-        // 5) ввести первое имя
-        $("input[placeholder='Enter new name']").shouldBe(visible, enabled).setValue(firstName);
-
-        // 6) сохранить
-        $$("button").findBy(text("Save Changes")).shouldBe(visible, enabled).click();
-
-        // 7) ОР: сообщение об успехе
-        Alert alert = switchTo().alert();
-        String alertText = alert.getText();
-        assertThat(alertText).contains("Name updated successfully");
-        alert.accept();
-
-        // 8) вернуться в меню
-        $$("button").findBy(text("Home")).shouldBe(visible, enabled).click();
-
-        //9) снова открыть редактирование профиля
-        $("header .profile-header").shouldBe(visible, enabled).click();
-        webdriver().shouldHave(urlContaining("/edit-profile"));
-
-        //10) ввести второе имя
-        $("input[placeholder='Enter new name']").shouldBe(visible, enabled).setValue(secondName);
-
-        //11) сохранить
-        $$("button").findBy(text("Save Changes")).shouldBe(visible, enabled).click();
-
-        //12) ОР: сообщение об успехе
-        Alert alert2 = switchTo().alert();
-        String alertText2 = alert2.getText();
-        assertThat(alertText2).contains("Name updated successfully");
-        alert2.accept();
-
-        // 13) проверка имени в API
-        String actualName = io.restassured.RestAssured.given()
-                .spec(userSpec)
-                .when()
-                .get("customer/profile")
-                .then()
-                .statusCode(200)
-                .extract()
-                .jsonPath()
-                .getString("name");
-
-        assertThat(actualName).isEqualTo(secondName);
+        // 3) проверка итогового имени через API
+        var customer = ProfileSteps.getProfile(userSpec, ResponseSpecs.requestReturnsOK());
+        assertThat(customer.getName()).isEqualTo(secondName);
     }
 
     @Test
 // Негативный тест: одно слово в имени
     void setNameSingleWord() {
-        String name = "Jjdjslsd";
-        // 1) пользователь (API)
-        CreateUserRequest user = AdminSteps.createUser();
+        String invalidName = "Jjdjslsd";
+        // 1) ввести невалидное имя и сохранить → ожидаем алерт с ошибкой
+        new EditProfilePage()
+                .open()
+                .edit(invalidName)
+                .checkAlertMessageAndAccept(BankAlert.INVALID_NAME_SINGLE_WORD.getMessage());
 
-        // 2) авторизация для API
-        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
+        // 2) проверка имени в API — оно не должно установиться
+        var customer = ProfileSteps.getProfile(userSpec, ResponseSpecs.requestReturnsOK());
+        assertThat(customer.getName()).isEqualTo(null);
+    }
 
-        // 3) логин - токен в localStorage (для UI)
-        String authHeader = new CrudRequester(
-                RequestSpecs.unauthSpec(), Endpoint.LOGIN, ResponseSpecs.requestReturnsOK())
-                .post(LoginUserRequest.builder()
-                        .username(user.getUsername())
-                        .password(user.getPassword())
-                        .build())
-                .extract()
-                .header("Authorization");
+    @ParameterizedTest
+    @ValueSource(strings = {"", "     "})
+// Негативный тест: пустая строка и только пробелы
+    void setNameEmptyOrSpaces(String invalidName) {
+        // 1) ввести невалидное имя и сохранить → ожидаем алерт с ошибкой
+        new EditProfilePage()
+                .open()
+                .edit(invalidName)
+                .checkAlertMessageAndAccept(BankAlert.INVALID_NAME_GENERIC.getMessage());
 
-        // 4) перейти на изменение профиля
-        open("/");
-        executeJavaScript("localStorage.setItem('authToken', arguments[0])", authHeader);
-        open("/edit-profile");
-
-        // 5) ввести имя
-        $("input[placeholder='Enter new name']").shouldBe(visible, enabled).setValue(name);
-
-        // 6) сохранить
-        $$("button").findBy(text("Save Changes")).shouldBe(visible, enabled).click();
-
-        // 7) ОР: сообщение об ошибке
-        Alert alert = switchTo().alert();
-        String alertText = alert.getText();
-        assertThat(alertText).contains("Name must contain two words with letters only");
-        alert.accept();
-
-        // 8) проверка имени в API
-        String actualName = io.restassured.RestAssured.given()
-                .spec(userSpec)
-                .when()
-                .get("customer/profile")
-                .then()
-                .statusCode(200)
-                .extract()
-                .jsonPath()
-                .getString("name");
-
-        assertThat(actualName).isEqualTo(null);
+        // 2) проверка имени в API — оно не должно установиться
+        var customer = ProfileSteps.getProfile(userSpec, ResponseSpecs.requestReturnsOK());
+        assertThat(customer.getName()).isEqualTo(null);
     }
 
     @Test
-// Негативный тест: пустая строка
-    void setNameEmpty() {
-        // 1) пользователь (API)
-        CreateUserRequest user = AdminSteps.createUser();
-
-        // 2) авторизация для API
-        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
-
-        // 3) логин - токен в localStorage (для UI)
-        String authHeader = new CrudRequester(
-                RequestSpecs.unauthSpec(), Endpoint.LOGIN, ResponseSpecs.requestReturnsOK())
-                .post(LoginUserRequest.builder()
-                        .username(user.getUsername())
-                        .password(user.getPassword())
-                        .build())
-                .extract()
-                .header("Authorization");
-
-        // 4) перейти на изменение профиля
-        open("/");
-        executeJavaScript("localStorage.setItem('authToken', arguments[0])", authHeader);
-        open("/edit-profile");
-
-        // 5) сохранить
-        $$("button").findBy(text("Save Changes")).shouldBe(visible, enabled).click();
-
-        // 6) ОР: сообщение об ошибке
-        Alert alert = switchTo().alert();
-        String alertText = alert.getText();
-        assertThat(alertText).contains("Please enter a valid name");
-        alert.accept();
-
-        // 7) проверка имени в API
-        String actualName = io.restassured.RestAssured.given()
-                .spec(userSpec)
-                .when()
-                .get("customer/profile")
-                .then()
-                .statusCode(200)
-                .extract()
-                .jsonPath()
-                .getString("name");
-
-        assertThat(actualName).isEqualTo(null);
-    }
-
-    @Test
-// Негативный тест: только пробелы
-    void setNameSpacesOnly() {
-        String name = "     ";
-        // 1) пользователь (API)
-        CreateUserRequest user = AdminSteps.createUser();
-
-        // 2) авторизация для API
-        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
-
-        // 3) логин - токен в localStorage (для UI)
-        String authHeader = new CrudRequester(
-                RequestSpecs.unauthSpec(), Endpoint.LOGIN, ResponseSpecs.requestReturnsOK())
-                .post(LoginUserRequest.builder()
-                        .username(user.getUsername())
-                        .password(user.getPassword())
-                        .build())
-                .extract()
-                .header("Authorization");
-
-        // 4) перейти на изменение профиля
-        open("/");
-        executeJavaScript("localStorage.setItem('authToken', arguments[0])", authHeader);
-        open("/edit-profile");
-
-        // 5) ввести имя
-        $("input[placeholder='Enter new name']").shouldBe(visible, enabled).setValue(name);
-
-        // 6) сохранить
-        $$("button").findBy(text("Save Changes")).shouldBe(visible, enabled).click();
-
-        // 7) ОР: сообщение об ошибке
-        Alert alert = switchTo().alert();
-        String alertText = alert.getText();
-        assertThat(alertText).contains("Please enter a valid name");
-        alert.accept();
-
-        // 8) проверка имени в API
-        String actualName = io.restassured.RestAssured.given()
-                .spec(userSpec)
-                .when()
-                .get("customer/profile")
-                .then()
-                .statusCode(200)
-                .extract()
-                .jsonPath()
-                .getString("name");
-
-        assertThat(actualName).isEqualTo(null);
-    }
-
-    @Test
-// Негативный тест: новое имя совпадает с текущим
+// Негативный тест: новое имя совпадает с текущим (текущее задано через API)
     void setNameSameAsCurrent() {
-        String firstName = "Keys Jons";
-        String secondName = "Keys Jons";
+        String currentName = generateValidFullName();
+        // 1) первичная установка имени через API
+        UpdateProfileRequest apiPayload = new UpdateProfileRequest(currentName);
+        ProfileSteps.updateProfile(userSpec, ResponseSpecs.requestReturnsOK(), apiPayload);
 
-        // 1) пользователь (API)
-        CreateUserRequest user = AdminSteps.createUser();
+        // 2) попытка установить то же самое имя через UI → ожидаем алерт об ошибке
+        new EditProfilePage()
+                .open()
+                .edit(currentName)
+                .checkAlertMessageAndAccept(BankAlert.NAME_SAME_AS_CURRENT.getMessage());
 
-        // 2) авторизация для API
-        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
-
-        // 3) логин - токен в localStorage (для UI)
-        String authHeader = new CrudRequester(
-                RequestSpecs.unauthSpec(), Endpoint.LOGIN, ResponseSpecs.requestReturnsOK())
-                .post(LoginUserRequest.builder()
-                        .username(user.getUsername())
-                        .password(user.getPassword())
-                        .build())
-                .extract()
-                .header("Authorization");
-
-        // 4) перейти на изменение профиля
-        open("/");
-        executeJavaScript("localStorage.setItem('authToken', arguments[0])", authHeader);
-        open("/edit-profile");
-
-        // 5) ввести первое имя
-        $("input[placeholder='Enter new name']").shouldBe(visible, enabled).setValue(firstName);
-
-        // 6) сохранить
-        $$("button").findBy(text("Save Changes")).shouldBe(visible, enabled).click();
-
-        // 7) ОР: сообщение об успехе
-        Alert alert = switchTo().alert();
-        String alertText = alert.getText();
-        assertThat(alertText).contains("Name updated successfully");
-        alert.accept();
-
-        // 8) вернуться в меню
-        $$("button").findBy(text("Home")).shouldBe(visible, enabled).click();
-
-        // 9)снова открыть редактирование профиля
-        $("header .profile-header").shouldBe(visible, enabled).click();
-        webdriver().shouldHave(urlContaining("/edit-profile"));
-
-        // 10)ввести то же самое имя
-        $("input[placeholder='Enter new name']").shouldBe(visible, enabled).setValue(secondName);
-
-        // 11)сохранить
-        $$("button").findBy(text("Save Changes")).shouldBe(visible, enabled).click();
-
-        // 12) ОР: сообщение об ошибке
-        Alert alert2 = switchTo().alert();
-        String alertText2 = alert2.getText();
-        assertThat(alertText2).contains("New name is the same as the current one");
-        alert2.accept();
-
-        // 13) проверка имени в API
-        String actualName = io.restassured.RestAssured.given()
-                .spec(userSpec)
-                .when()
-                .get("customer/profile")
-                .then()
-                .statusCode(200)
-                .extract()
-                .jsonPath()
-                .getString("name");
-
-        assertThat(actualName).isEqualTo(firstName);
+        // 3) проверка имени в API — оно осталось прежним
+        var customer = ProfileSteps.getProfile(userSpec, ResponseSpecs.requestReturnsOK());
+        assertThat(customer.getName()).isEqualTo(currentName);
     }
 
     @Test
 // Негативный тест: повторное изменение на пробелы
     void updateNameSecondTimeToSpaces() {
-        String firstName = "Keys Jons";
-        String secondName = "    ";
+        String firstName = generateValidFullName();
+        String invalidName = "    ";
 
-        // 1) пользователь (API)
-        CreateUserRequest user = AdminSteps.createUser();
+        // 1) первичная установка имени через API
+        UpdateProfileRequest apiPayload = new UpdateProfileRequest(firstName);
+        ProfileSteps.updateProfile(userSpec, ResponseSpecs.requestReturnsOK(), apiPayload);
 
-        // 2) авторизация для API
-        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
+        // 2) попытка изменить имя на пробелы через UI → ожидаем алерт об ошибке
+        new EditProfilePage()
+                .open()
+                .edit(invalidName)
+                .checkAlertMessageAndAccept(BankAlert.INVALID_NAME_GENERIC.getMessage());
 
-        // 3) логин - токен в localStorage (для UI)
-        String authHeader = new CrudRequester(
-                RequestSpecs.unauthSpec(), Endpoint.LOGIN, ResponseSpecs.requestReturnsOK())
-                .post(LoginUserRequest.builder()
-                        .username(user.getUsername())
-                        .password(user.getPassword())
-                        .build())
-                .extract()
-                .header("Authorization");
-
-        // 4) перейти на изменение профиля
-        open("/");
-        executeJavaScript("localStorage.setItem('authToken', arguments[0])", authHeader);
-        open("/edit-profile");
-
-        // 5) ввести первое имя
-        $("input[placeholder='Enter new name']").shouldBe(visible, enabled).setValue(firstName);
-
-        // 6) сохранить
-        $$("button").findBy(text("Save Changes")).shouldBe(visible, enabled).click();
-
-        // 7) ОР: сообщение об успехе
-        Alert alert = switchTo().alert();
-        String alertText = alert.getText();
-        assertThat(alertText).contains("Name updated successfully");
-        alert.accept();
-
-        // 8)вернуться в меню
-        $$("button").findBy(text("Home")).shouldBe(visible, enabled).click();
-
-        // 9)снова открыть редактирование профиля
-        $("header .profile-header").shouldBe(visible, enabled).click();
-        webdriver().shouldHave(urlContaining("/edit-profile"));
-
-        // 10)ввести пробелы
-        $("input[placeholder='Enter new name']").shouldBe(visible, enabled).setValue(secondName);
-
-        // 11)сохранить
-        $$("button").findBy(text("Save Changes")).shouldBe(visible, enabled).click();
-
-        // 12) ОР: сообщение об ошибке
-        Alert alert2 = switchTo().alert();
-        String alertText2 = alert2.getText();
-        assertThat(alertText2).contains("Please enter a valid name");
-        alert2.accept();
-
-        // 13) проверка имени в API
-        String actualName = io.restassured.RestAssured.given()
-                .spec(userSpec)
-                .when()
-                .get("customer/profile")
-                .then()
-                .statusCode(200)
-                .extract()
-                .jsonPath()
-                .getString("name");
-
-        assertThat(actualName).isEqualTo(firstName);
+        // 3) проверка имени в API — оно осталось прежним
+        var customer = ProfileSteps.getProfile(userSpec, ResponseSpecs.requestReturnsOK());
+        assertThat(customer.getName()).isEqualTo(firstName);
     }
 
 }

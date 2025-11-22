@@ -1,1387 +1,999 @@
 package iteration2test.ui;
 
-import com.codeborne.selenide.Configuration;
-import com.codeborne.selenide.SelenideElement;
-import models.AccountResponse;
-import models.CreateUserRequest;
-import models.LoginUserRequest;
-import org.junit.jupiter.api.BeforeAll;
+import api.models.AccountResponse;
+import api.models.CreateUserRequest;
+import api.models.DepositRequest;
+import api.models.TransferRequest;
+import api.requests.steps.AccountSteps;
+import api.requests.steps.AdminSteps;
+import api.specs.RequestSpecs;
+import api.specs.ResponseSpecs;
+import io.restassured.specification.RequestSpecification;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.openqa.selenium.Alert;
-import org.openqa.selenium.Keys;
-import org.openqa.selenium.chrome.ChromeOptions;
-import requests.skelethon.Endpoint;
-import requests.skelethon.requester.CrudRequester;
-import requests.steps.AccountSteps;
-import requests.steps.AdminSteps;
-import specs.RequestSpecs;
-import specs.ResponseSpecs;
+import ui.pages.MoneyTransferPage;
 
 import java.math.BigDecimal;
-import java.util.Arrays;
-import java.util.Map;
+import java.math.RoundingMode;
+import java.util.concurrent.ThreadLocalRandom;
 
-import static com.codeborne.selenide.Condition.*;
-import static com.codeborne.selenide.Selenide.*;
+import static com.codeborne.selenide.Selenide.switchTo;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class MoneyTransferUITest {
-    @BeforeAll
-    static void setupSelenoid() {
-        Configuration.remote = "http://localhost:4444/wd/hub";
-        Configuration.baseUrl = "http://localhost:3000";          // Origin = localhost
-        Configuration.browser = "chrome";
-        Configuration.browserSize = "1920x1080";
-
-        String hostIp = "192.168.1.65";                            // мой IPv4 Wi-Fi
-        ChromeOptions chrome = new ChromeOptions()
-                .addArguments("--host-resolver-rules=MAP localhost " + hostIp);
-        chrome.setCapability("selenoid:options", Map.of("enableVNC", true, "enableLog", true));
-        Configuration.browserCapabilities = chrome;
-    }
-
+public class MoneyTransferUITest extends BaseUiTest {
     private CreateUserRequest user;
-    private Long accountId;
+    private CreateUserRequest user2;
+    private RequestSpecification userSpec;
+    private RequestSpecification userSpec2;
+    private AccountResponse senderAccount;
+    private AccountResponse recipientAccount;
+
+    // генерация валидной суммы
+    private int generateValidAmount() {
+        return ThreadLocalRandom.current().nextInt(1, 5000);
+    }
+
+    // сумма одного перевода для двух переводов при депозите ≤ 5000 (amount * 2 ≤ 5000)
+    private int generateAmountForTwoTransfersWithinDepositLimit() {
+        return ThreadLocalRandom.current().nextInt(1, 2501);
+    }
+
+    // первая сумма перевода при повторном переводе с изменением суммы
+    private int generateFirstTransferAmountWithinDepositLimit() {
+        return ThreadLocalRandom.current().nextInt(2, 5000);
+    }
+
+    // вторая сумма перевода: меньше первой и так, чтобы first + second ≤ 5000
+    private int generateSecondTransferAmountWithinDepositLimit(int firstTransferAmount) {
+        int maxSecond = Math.min(firstTransferAmount - 1, 5000 - firstTransferAmount);
+        return ThreadLocalRandom.current().nextInt(1, maxSecond + 1);
+    }
+
+    @BeforeEach
+    void setUpUsersAndAccounts() {
+        // 1) пользователи (API)
+        user = AdminSteps.createUser();
+        user2 = AdminSteps.createUser();
+
+        // 2) авторизация для API
+        userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
+        userSpec2 = RequestSpecs.authAsUser(user2.getUsername(), user2.getPassword());
+
+        // 3) создание счетов (API)
+        senderAccount = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated());
+        recipientAccount = AccountSteps.createAccount(userSpec2, ResponseSpecs.entityWasCreated());
+    }
 
     @Test
-// Позитивный тест: перевод денег со своего счета на счет другого пользователя
+        // Позитивный тест: перевод денег со своего счёта на счёт другого пользователя
     void transferMoneyToAnotherAccountSuccess() {
-        int amount = 1000;
-        // 1) пользователи (API)
-        CreateUserRequest user = AdminSteps.createUser();
-        CreateUserRequest user2 = AdminSteps.createUser();
-        // 2) авторизация для API
-        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
-        var userSpec2 = RequestSpecs.authAsUser(user2.getUsername(), user2.getPassword());
-        // 3) создание счетов (API)
-        AccountResponse account = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated());
-        String accountNumber = account.getAccountNumber();
-        AccountResponse account2 = AccountSteps.createAccount(userSpec2, ResponseSpecs.entityWasCreated());
-        String accountNumber2 = account2.getAccountNumber();
-        // 4) пополнить баланс отправителя (API) на сумму перевода
-        Long accountId = account.getId();
-        var deposit = models.DepositRequest.builder()
-                .id(accountId)
-                .balance(java.math.BigDecimal.valueOf(amount).setScale(2, java.math.RoundingMode.HALF_UP))
+        // сумма, на которую пополним счёт отправителя
+        int initialAmount = generateValidAmount();
+        // сумма перевода (не больше остатка на счёте)
+        int transferAmount = ThreadLocalRandom.current().nextInt(1, initialAmount + 1);
+
+        // 1) пополнить баланс отправителя (API) на initialAmount
+        DepositRequest depositPayload = DepositRequest.builder()
+                .id(senderAccount.getId())
+                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
                 .build();
+
         AccountSteps.deposit(
                 userSpec,
                 ResponseSpecs.requestReturnsOK(),
-                deposit
+                depositPayload
         );
-        // 5) логин — токен в localStorage (для UI)
-        String authHeader = new CrudRequester(
-                RequestSpecs.unauthSpec(), Endpoint.LOGIN, ResponseSpecs.requestReturnsOK())
-                .post(LoginUserRequest.builder()
-                        .username(user.getUsername())
-                        .password(user.getPassword())
-                        .build())
-                .extract()
-                .header("Authorization");
-        open("/");
-        executeJavaScript("localStorage.setItem('authToken', arguments[0])", authHeader);
-        open("/transfer");
-        // 6) выбрать счёт отправителя
-        $("select.account-selector").shouldBe(visible, enabled)
-                .selectOptionContainingText(accountNumber);
-        // 7) ввести номер счёта получателя
-        $("input[placeholder='Enter recipient account number']")
-                .shouldBe(visible, enabled)
-                .setValue(accountNumber2)
-                .shouldHave(value(accountNumber2));
-        // 8) ввести сумму
-        $("input[placeholder='Enter amount']")
-                .shouldBe(visible, enabled)
-                .setValue(String.valueOf(amount));
-        // 9) подтвердить чекбокс
-        $("#confirmCheck").shouldBe(visible, enabled).setSelected(true)
-                .shouldBe(checked);
-        // 10) отправить перевод
-        $$("button").findBy(text("Send Transfer"))
-                .shouldBe(visible, enabled)
-                .click();
-        // 11) ОР: появился alert
-        Alert alert = switchTo().alert();
-        String alertText = alert.getText();
-        assertThat(alertText)
-                .contains("Successfully transferred $" + amount)
-                .contains("to account " + accountNumber2);
-        alert.accept();
-        // 12) API: баланс отправителя = 0, получателя = amount
-        AccountResponse[] senderAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec)
-                .when()
-                .get("customer/accounts")
-                .then()
-                .statusCode(200)
-                .extract()
-                .as(AccountResponse[].class);
-        AccountResponse updatedSender = Arrays.stream(senderAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber))
-                .findFirst().orElseThrow();
-        assertThat(updatedSender.getBalance()).isEqualByComparingTo(BigDecimal.valueOf(0));
-        AccountResponse[] recipientAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec2)
-                .when()
-                .get("customer/accounts")
-                .then()
-                .statusCode(200)
-                .extract()
-                .as(AccountResponse[].class);
-        AccountResponse updatedRecipient = Arrays.stream(recipientAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber2))
-                .findFirst().orElseThrow();
-        assertThat(updatedRecipient.getBalance()).isEqualByComparingTo(BigDecimal.valueOf(amount));
+
+        // 2) авторизация в UI через токен
+        authAsUser(user);
+
+        String senderAccountNumber = senderAccount.getAccountNumber();
+        String recipientAccountNumber = recipientAccount.getAccountNumber();
+
+        // 3) перевод денег через UI + проверка алерта
+        new MoneyTransferPage()
+                .open()
+                .transfer(senderAccountNumber, recipientAccountNumber, String.valueOf(transferAmount))
+                .checkSuccessAlert(
+                        transferAmount,
+                        recipientAccountNumber,
+                        BankAlert.TRANSFER_SUCCESS_PREFIX.getMessage()
+                );
+
+        // 4) API: баланс отправителя = initialAmount - transferAmount
+        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                senderAccountNumber
+        );
+
+        // 5) API: баланс получателя = transferAmount
+        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
+                userSpec2,
+                ResponseSpecs.requestReturnsOK(),
+                recipientAccountNumber
+        );
+
+        assertThat(updatedSender.getBalance())
+                .isEqualByComparingTo(BigDecimal.valueOf(initialAmount - transferAmount));
+
+        assertThat(updatedRecipient.getBalance())
+                .isEqualByComparingTo(BigDecimal.valueOf(transferAmount));
     }
 
     @Test
-// Негативный тест: перевод без выбора исходного счёта
+        // Негативный тест: перевод без выбора исходного счёта
     void transferWithoutSourceAccount() {
-        int amount = 1000;
-        // 1) пользователи (API)
-        CreateUserRequest user = AdminSteps.createUser();
-        CreateUserRequest user2 = AdminSteps.createUser();
-        // 2) авторизация для API
-        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
-        var userSpec2 = RequestSpecs.authAsUser(user2.getUsername(), user2.getPassword());
-        // 3) создание счетов (API)
-        AccountResponse account = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated());
-        String accountNumber = account.getAccountNumber();
-        AccountResponse account2 = AccountSteps.createAccount(userSpec2, ResponseSpecs.entityWasCreated());
-        String accountNumber2 = account2.getAccountNumber();
-        // 4) пополнить баланс отправителя (API) на сумму перевода
-        Long accountId = account.getId();
-        var deposit = models.DepositRequest.builder()
-                .id(accountId)
-                .balance(java.math.BigDecimal.valueOf(amount).setScale(2, java.math.RoundingMode.HALF_UP))
+        // сумма, на которую пополним счёт отправителя
+        int initialAmount = generateValidAmount();
+        // сумма перевода (не больше остатка на счёте)
+        int transferAmount = ThreadLocalRandom.current().nextInt(1, initialAmount + 1);
+
+        // 1) пополнить баланс отправителя (API) на initialAmount
+        DepositRequest depositPayload = DepositRequest.builder()
+                .id(senderAccount.getId())
+                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
                 .build();
+
         AccountSteps.deposit(
                 userSpec,
                 ResponseSpecs.requestReturnsOK(),
-                deposit
+                depositPayload
         );
-        // 5) логин — токен в localStorage (для UI)
-        String authHeader = new CrudRequester(
-                RequestSpecs.unauthSpec(), Endpoint.LOGIN, ResponseSpecs.requestReturnsOK())
-                .post(LoginUserRequest.builder()
-                        .username(user.getUsername())
-                        .password(user.getPassword())
-                        .build())
-                .extract()
-                .header("Authorization");
-        open("/");
-        executeJavaScript("localStorage.setItem('authToken', arguments[0])", authHeader);
-        open("/transfer");
-        // 6) ввести номер счёта получателя
-        $("input[placeholder='Enter recipient account number']")
-                .shouldBe(visible, enabled)
-                .setValue(accountNumber2)
-                .shouldHave(value(accountNumber2));
-        // 7) ввести сумму
-        $("input[placeholder='Enter amount']")
-                .shouldBe(visible, enabled)
-                .setValue(String.valueOf(amount));
-        // 8) подтвердить чекбокс
-        $("#confirmCheck").shouldBe(visible, enabled).setSelected(true)
-                .shouldBe(checked);
-        // 9) отправить перевод
-        $$("button").findBy(text("Send Transfer"))
-                .shouldBe(visible, enabled)
-                .click();
-        // 10) ОР: появился alert
-        Alert alert = switchTo().alert();
-        String alertText = alert.getText();
-        assertThat(alertText)
-                .contains("Please fill all fields and confirm");
-        alert.accept();
-        // 12) API: балансы без изменений
-        AccountResponse[] senderAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec)
-                .when()
-                .get("customer/accounts")
-                .then()
-                .statusCode(200)
-                .extract()
-                .as(AccountResponse[].class);
-        AccountResponse updatedSender = Arrays.stream(senderAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber))
-                .findFirst().orElseThrow();
-        assertThat(updatedSender.getBalance()).isEqualByComparingTo(BigDecimal.valueOf(amount));
-        AccountResponse[] recipientAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec2)
-                .when()
-                .get("customer/accounts")
-                .then()
-                .statusCode(200)
-                .extract()
-                .as(AccountResponse[].class);
-        AccountResponse updatedRecipient = Arrays.stream(recipientAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber2))
-                .findFirst().orElseThrow();
-        assertThat(updatedRecipient.getBalance()).isEqualByComparingTo(BigDecimal.valueOf(0));
+
+        // 2) авторизация в UI через токен
+        authAsUser(user);
+
+        String senderAccountNumber = senderAccount.getAccountNumber();
+        String recipientAccountNumber = recipientAccount.getAccountNumber();
+
+        // 3) попытка перевода без выбора исходного счёта
+        new MoneyTransferPage()
+                .open()
+                .submitWithoutSourceAccount(
+                        recipientAccountNumber,
+                        String.valueOf(transferAmount)
+                )
+                .checkAlertMessageAndAccept(
+                        BankAlert.TRANSFER_FIELDS_NOT_CONFIRMED.getMessage()
+                );
+
+        // 4) API: балансы без изменений
+        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                senderAccountNumber
+        );
+        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
+                userSpec2,
+                ResponseSpecs.requestReturnsOK(),
+                recipientAccountNumber
+        );
+
+        assertThat(updatedSender.getBalance())
+                .isEqualByComparingTo(BigDecimal.valueOf(initialAmount));
+        assertThat(updatedRecipient.getBalance())
+                .isEqualByComparingTo(BigDecimal.ZERO);
     }
 
     @Test
-// Негативный тест: перевод без выбора счёта получателя
+        // Негативный тест: перевод без выбора счёта получателя
     void transferWithoutRecipientAccount() {
-        int amount = 1000;
-        // 1) пользователи (API)
-        CreateUserRequest user = AdminSteps.createUser();
-        CreateUserRequest user2 = AdminSteps.createUser();
-        // 2) авторизация для API
-        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
-        var userSpec2 = RequestSpecs.authAsUser(user2.getUsername(), user2.getPassword());
-        // 3) создание счетов (API)
-        AccountResponse account = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated());
-        String accountNumber = account.getAccountNumber();
-        AccountResponse account2 = AccountSteps.createAccount(userSpec2, ResponseSpecs.entityWasCreated());
-        String accountNumber2 = account2.getAccountNumber();
-        // 4) пополнить баланс отправителя (API) на сумму перевода
-        Long accountId = account.getId();
-        var deposit = models.DepositRequest.builder()
-                .id(accountId)
-                .balance(java.math.BigDecimal.valueOf(amount).setScale(2, java.math.RoundingMode.HALF_UP))
+        // сумма, на которую пополним счёт отправителя
+        int initialAmount = generateValidAmount();
+        // сумма перевода (не больше остатка на счёте)
+        int transferAmount = ThreadLocalRandom.current().nextInt(1, initialAmount + 1);
+
+        // 1) пополнить баланс отправителя (API) на initialAmount
+        DepositRequest depositPayload = DepositRequest.builder()
+                .id(senderAccount.getId())
+                .balance(BigDecimal.valueOf(initialAmount)
+                        .setScale(2, RoundingMode.HALF_UP))
                 .build();
+
         AccountSteps.deposit(
                 userSpec,
                 ResponseSpecs.requestReturnsOK(),
-                deposit
+                depositPayload
         );
-        // 5) логин — токен в localStorage (для UI)
-        String authHeader = new CrudRequester(
-                RequestSpecs.unauthSpec(), Endpoint.LOGIN, ResponseSpecs.requestReturnsOK())
-                .post(LoginUserRequest.builder()
-                        .username(user.getUsername())
-                        .password(user.getPassword())
-                        .build())
-                .extract()
-                .header("Authorization");
-        open("/");
-        executeJavaScript("localStorage.setItem('authToken', arguments[0])", authHeader);
-        open("/transfer");
-        // 6) выбрать счёт отправителя
-        $("select.account-selector").shouldBe(visible, enabled)
-                .selectOptionContainingText(accountNumber);
-        // 7) ввести сумму
-        $("input[placeholder='Enter amount']")
-                .shouldBe(visible, enabled)
-                .setValue(String.valueOf(amount));
-        // 8) подтвердить чекбокс
-        $("#confirmCheck").shouldBe(visible, enabled).setSelected(true)
-                .shouldBe(checked);
-        // 9) отправить перевод
-        $$("button").findBy(text("Send Transfer"))
-                .shouldBe(visible, enabled)
-                .click();
-        // 10) ОР: появился alert
-        Alert alert = switchTo().alert();
-        String alertText = alert.getText();
-        assertThat(alertText)
-                .contains("Please fill all fields and confirm");
-        alert.accept();
-        // 12) API: балансы без изменений
-        AccountResponse[] senderAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec)
-                .when()
-                .get("customer/accounts")
-                .then()
-                .statusCode(200)
-                .extract()
-                .as(AccountResponse[].class);
-        AccountResponse updatedSender = Arrays.stream(senderAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber))
-                .findFirst().orElseThrow();
-        assertThat(updatedSender.getBalance()).isEqualByComparingTo(BigDecimal.valueOf(amount));
-        AccountResponse[] recipientAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec2)
-                .when()
-                .get("customer/accounts")
-                .then()
-                .statusCode(200)
-                .extract()
-                .as(AccountResponse[].class);
-        AccountResponse updatedRecipient = Arrays.stream(recipientAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber2))
-                .findFirst().orElseThrow();
-        assertThat(updatedRecipient.getBalance()).isEqualByComparingTo(BigDecimal.valueOf(0));
+
+        // 2) авторизация в UI через токен
+        authAsUser(user);
+
+        String senderAccountNumber = senderAccount.getAccountNumber();
+        String recipientAccountNumber = recipientAccount.getAccountNumber();
+
+        // 3) попытка перевода без ввода счёта получателя
+        new MoneyTransferPage()
+                .open()
+                .submitWithoutRecipientAccount(
+                        senderAccountNumber,
+                        String.valueOf(transferAmount)
+                )
+                .checkAlertMessageAndAccept(
+                        BankAlert.TRANSFER_FIELDS_NOT_CONFIRMED.getMessage()
+                );
+
+        // 4) API: балансы без изменений
+        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                senderAccountNumber
+        );
+        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
+                userSpec2,
+                ResponseSpecs.requestReturnsOK(),
+                recipientAccountNumber
+        );
+
+        assertThat(updatedSender.getBalance())
+                .isEqualByComparingTo(BigDecimal.valueOf(initialAmount));
+        assertThat(updatedRecipient.getBalance())
+                .isEqualByComparingTo(BigDecimal.ZERO);
     }
 
     @Test
-// Негативный тест: перевод с пустым полем "Сумма"
+        // Негативный тест: перевод с пустым полем "Сумма"
     void transferWithEmptyAmount() {
-        int amount = 1000;
-        // 1) пользователи (API)
-        CreateUserRequest user = AdminSteps.createUser();
-        CreateUserRequest user2 = AdminSteps.createUser();
-        // 2) авторизация для API
-        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
-        var userSpec2 = RequestSpecs.authAsUser(user2.getUsername(), user2.getPassword());
-        // 3) создание счетов (API)
-        AccountResponse account = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated());
-        String accountNumber = account.getAccountNumber();
-        AccountResponse account2 = AccountSteps.createAccount(userSpec2, ResponseSpecs.entityWasCreated());
-        String accountNumber2 = account2.getAccountNumber();
-        // 4) пополнить баланс отправителя (API) на сумму перевода
-        Long accountId = account.getId();
-        var deposit = models.DepositRequest.builder()
-                .id(accountId)
-                .balance(java.math.BigDecimal.valueOf(amount).setScale(2, java.math.RoundingMode.HALF_UP))
+        // сумма, на которую пополним счёт отправителя
+        int initialAmount = generateValidAmount();
+
+        // 1) пополнить баланс отправителя (API) на initialAmount
+        DepositRequest depositPayload = DepositRequest.builder()
+                .id(senderAccount.getId())
+                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
                 .build();
+
         AccountSteps.deposit(
                 userSpec,
                 ResponseSpecs.requestReturnsOK(),
-                deposit
+                depositPayload
         );
-        // 5) логин — токен в localStorage (для UI)
-        String authHeader = new CrudRequester(
-                RequestSpecs.unauthSpec(), Endpoint.LOGIN, ResponseSpecs.requestReturnsOK())
-                .post(LoginUserRequest.builder()
-                        .username(user.getUsername())
-                        .password(user.getPassword())
-                        .build())
-                .extract()
-                .header("Authorization");
-        open("/");
-        executeJavaScript("localStorage.setItem('authToken', arguments[0])", authHeader);
-        open("/transfer");
-        // 6) выбрать счёт отправителя
-        $("select.account-selector").shouldBe(visible, enabled)
-                .selectOptionContainingText(accountNumber);
-        // 7) ввести номер счёта получателя
-        $("input[placeholder='Enter recipient account number']")
-                .shouldBe(visible, enabled)
-                .setValue(accountNumber2)
-                .shouldHave(value(accountNumber2));
-        // 8) подтвердить чекбокс
-        $("#confirmCheck").shouldBe(visible, enabled).setSelected(true)
-                .shouldBe(checked);
-        // 9) отправить перевод
-        $$("button").findBy(text("Send Transfer"))
-                .shouldBe(visible, enabled)
-                .click();
-        // 10) ОР: появился alert
-        Alert alert = switchTo().alert();
-        String alertText = alert.getText();
-        assertThat(alertText)
-                .contains("Please fill all fields and confirm");
-        alert.accept();
-        // 11) API: балансы без изменений
-        AccountResponse[] senderAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec)
-                .when()
-                .get("customer/accounts")
-                .then()
-                .statusCode(200)
-                .extract()
-                .as(AccountResponse[].class);
-        AccountResponse updatedSender = Arrays.stream(senderAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber))
-                .findFirst().orElseThrow();
-        assertThat(updatedSender.getBalance()).isEqualByComparingTo(BigDecimal.valueOf(amount));
-        AccountResponse[] recipientAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec2)
-                .when()
-                .get("customer/accounts")
-                .then()
-                .statusCode(200)
-                .extract()
-                .as(AccountResponse[].class);
-        AccountResponse updatedRecipient = Arrays.stream(recipientAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber2))
-                .findFirst().orElseThrow();
-        assertThat(updatedRecipient.getBalance()).isEqualByComparingTo(BigDecimal.valueOf(0));
+
+        // 2) авторизация в UI через токен
+        authAsUser(user);
+
+        String senderAccountNumber = senderAccount.getAccountNumber();
+        String recipientAccountNumber = recipientAccount.getAccountNumber();
+
+        // 3) попытка перевода с пустым полем "Сумма"
+        new MoneyTransferPage()
+                .open()
+                .submitWithEmptyAmount(
+                        senderAccountNumber,
+                        recipientAccountNumber
+                )
+                .checkAlertMessageAndAccept(
+                        BankAlert.TRANSFER_FIELDS_NOT_CONFIRMED.getMessage()
+                );
+
+        // 4) API: балансы без изменений
+        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                senderAccountNumber
+        );
+        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
+                userSpec2,
+                ResponseSpecs.requestReturnsOK(),
+                recipientAccountNumber
+        );
+
+        assertThat(updatedSender.getBalance())
+                .isEqualByComparingTo(BigDecimal.valueOf(initialAmount));
+        assertThat(updatedRecipient.getBalance())
+                .isEqualByComparingTo(BigDecimal.ZERO);
     }
 
     @Test
-// Негативный тест: перевод на несуществующий счёт
+        // Негативный тест: перевод на несуществующий счёт
     void transferToNonexistentAccount() {
-        int amount = 1000;
-        // 1) пользователи (API)
-        CreateUserRequest user = AdminSteps.createUser();
-        CreateUserRequest user2 = AdminSteps.createUser();
-        // 2) авторизация для API
-        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
-        var userSpec2 = RequestSpecs.authAsUser(user2.getUsername(), user2.getPassword());
-        // 3) создание счетов (API)
-        AccountResponse account = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated());
-        String accountNumber = account.getAccountNumber();
-        AccountResponse account2 = AccountSteps.createAccount(userSpec2, ResponseSpecs.entityWasCreated());
-        String accountNumber2 = account2.getAccountNumber();
-        // 4) пополнить баланс отправителя (API) на сумму перевода
-        Long accountId = account.getId();
-        var deposit = models.DepositRequest.builder()
-                .id(accountId)
-                .balance(java.math.BigDecimal.valueOf(amount).setScale(2, java.math.RoundingMode.HALF_UP))
+        // сумма, на которую пополним счёт отправителя
+        int initialAmount = generateValidAmount();
+
+        // 1) пополнить баланс отправителя (API) на initialAmount
+        DepositRequest depositPayload = DepositRequest.builder()
+                .id(senderAccount.getId())
+                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
                 .build();
+
         AccountSteps.deposit(
                 userSpec,
                 ResponseSpecs.requestReturnsOK(),
-                deposit
+                depositPayload
         );
-        // 5) логин — токен в localStorage (для UI)
-        String authHeader = new CrudRequester(
-                RequestSpecs.unauthSpec(), Endpoint.LOGIN, ResponseSpecs.requestReturnsOK())
-                .post(LoginUserRequest.builder()
-                        .username(user.getUsername())
-                        .password(user.getPassword())
-                        .build())
-                .extract()
-                .header("Authorization");
-        open("/");
-        executeJavaScript("localStorage.setItem('authToken', arguments[0])", authHeader);
-        open("/transfer");
-        // 6) выбрать счёт отправителя
-        $("select.account-selector").shouldBe(visible, enabled)
-                .selectOptionContainingText(accountNumber);
-        // 7) ввести сумму
-        $("input[placeholder='Enter amount']")
-                .shouldBe(visible, enabled)
-                .setValue(String.valueOf(amount));
-        // 8) ввести номер счёта получателя (несуществующий)
-        $("input[placeholder='Enter recipient account number']")
-                .shouldBe(visible, enabled)
-                .setValue("ACC1000200");
-        // 9) подтвердить чекбокс
-        $("#confirmCheck").shouldBe(visible, enabled).setSelected(true)
-                .shouldBe(checked);
-        // 10) отправить перевод
-        $$("button").findBy(text("Send Transfer"))
-                .shouldBe(visible, enabled)
-                .click();
-        // 11) ОР: появился alert
-        Alert alert = switchTo().alert();
-        String alertText = alert.getText();
-        assertThat(alertText)
-                .contains("No user found with this account number");
-        alert.accept();
-        // 12) API: балансы без изменений
-        AccountResponse[] senderAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec)
-                .when()
-                .get("customer/accounts")
-                .then()
-                .statusCode(200)
-                .extract()
-                .as(AccountResponse[].class);
-        AccountResponse updatedSender = Arrays.stream(senderAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber))
-                .findFirst().orElseThrow();
-        assertThat(updatedSender.getBalance()).isEqualByComparingTo(BigDecimal.valueOf(amount));
-        AccountResponse[] recipientAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec2)
-                .when()
-                .get("customer/accounts")
-                .then()
-                .statusCode(200)
-                .extract()
-                .as(AccountResponse[].class);
-        AccountResponse updatedRecipient = Arrays.stream(recipientAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber2))
-                .findFirst().orElseThrow();
-        assertThat(updatedRecipient.getBalance()).isEqualByComparingTo(BigDecimal.valueOf(0));
+
+        // 2) авторизация в UI через токен
+        authAsUser(user);
+
+        String senderAccountNumber = senderAccount.getAccountNumber();
+        String recipientAccountNumber = recipientAccount.getAccountNumber();
+
+        // 3) попытка перевода на несуществующий счёт
+        String nonexistentAccountNumber = "ACC1000200";
+
+        new MoneyTransferPage()
+                .open()
+                .transfer(
+                        senderAccountNumber,
+                        nonexistentAccountNumber,
+                        String.valueOf(initialAmount)
+                )
+                .checkAlertMessageAndAccept(
+                        BankAlert.TRANSFER_ACCOUNT_NOT_FOUND.getMessage()
+                );
+
+        // 4) API: балансы без изменений
+        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                senderAccountNumber
+        );
+        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
+                userSpec2,
+                ResponseSpecs.requestReturnsOK(),
+                recipientAccountNumber
+        );
+
+        assertThat(updatedSender.getBalance())
+                .isEqualByComparingTo(BigDecimal.valueOf(initialAmount));
+        assertThat(updatedRecipient.getBalance())
+                .isEqualByComparingTo(BigDecimal.ZERO);
     }
 
     @Test
-// Негативный тест: перевод без активации чек-бокса подтверждения
+        // Негативный тест: перевод без активации чек-бокса подтверждения
     void transferWithoutConfirm() {
-        int amount = 1000;
-        // 1) пользователи (API)
-        CreateUserRequest user = AdminSteps.createUser();
-        CreateUserRequest user2 = AdminSteps.createUser();
-        // 2) авторизация для API
-        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
-        var userSpec2 = RequestSpecs.authAsUser(user2.getUsername(), user2.getPassword());
-        // 3) создание счетов (API)
-        AccountResponse account = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated());
-        String accountNumber = account.getAccountNumber();
-        AccountResponse account2 = AccountSteps.createAccount(userSpec2, ResponseSpecs.entityWasCreated());
-        String accountNumber2 = account2.getAccountNumber();
-        // 4) пополнить баланс отправителя (API) на сумму перевода
-        Long accountId = account.getId();
-        var deposit = models.DepositRequest.builder()
-                .id(accountId)
-                .balance(java.math.BigDecimal.valueOf(amount).setScale(2, java.math.RoundingMode.HALF_UP))
+        // сумма перевода
+        int amount = generateValidAmount();
+
+        // 1) пополнить баланс отправителя (API) на сумму перевода
+        var deposit = DepositRequest.builder()
+                .id(senderAccount.getId())
+                .balance(BigDecimal.valueOf(amount).setScale(2, RoundingMode.HALF_UP))
                 .build();
+
         AccountSteps.deposit(
                 userSpec,
                 ResponseSpecs.requestReturnsOK(),
                 deposit
         );
-        // 5) логин — токен в localStorage (для UI)
-        String authHeader = new CrudRequester(
-                RequestSpecs.unauthSpec(), Endpoint.LOGIN, ResponseSpecs.requestReturnsOK())
-                .post(LoginUserRequest.builder()
-                        .username(user.getUsername())
-                        .password(user.getPassword())
-                        .build())
-                .extract()
-                .header("Authorization");
-        open("/");
-        executeJavaScript("localStorage.setItem('authToken', arguments[0])", authHeader);
-        open("/transfer");
-        // 6) выбрать счёт отправителя
-        $("select.account-selector").shouldBe(visible, enabled)
-                .selectOptionContainingText(accountNumber);
-        // 7) ввести сумму
-        $("input[placeholder='Enter amount']")
-                .shouldBe(visible, enabled)
-                .setValue(String.valueOf(amount));
-        // 8) ввести номер счёта получателя
-        $("input[placeholder='Enter recipient account number']")
-                .shouldBe(visible, enabled)
-                .setValue(accountNumber2)
-                .shouldHave(value(accountNumber2));
-        // 9) отправить перевод
-        $$("button").findBy(text("Send Transfer"))
-                .shouldBe(visible, enabled)
-                .click();
-        // 10) ОР: появился alert
-        Alert alert = switchTo().alert();
-        String alertText = alert.getText();
-        assertThat(alertText)
-                .contains("Please fill all fields and confirm");
-        alert.accept();
-        // 11) API: балансы без изменений
-        AccountResponse[] senderAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec)
-                .when()
-                .get("customer/accounts")
-                .then()
-                .statusCode(200)
-                .extract()
-                .as(AccountResponse[].class);
-        AccountResponse updatedSender = Arrays.stream(senderAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber))
-                .findFirst().orElseThrow();
-        assertThat(updatedSender.getBalance()).isEqualByComparingTo(BigDecimal.valueOf(amount));
-        AccountResponse[] recipientAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec2)
-                .when()
-                .get("customer/accounts")
-                .then()
-                .statusCode(200)
-                .extract()
-                .as(AccountResponse[].class);
-        AccountResponse updatedRecipient = Arrays.stream(recipientAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber2))
-                .findFirst().orElseThrow();
-        assertThat(updatedRecipient.getBalance()).isEqualByComparingTo(BigDecimal.valueOf(0));
+
+        // 2) авторизация в UI через токен
+        authAsUser(user);
+
+        String senderAccountNumber = senderAccount.getAccountNumber();
+        String recipientAccountNumber = recipientAccount.getAccountNumber();
+
+        // 3) перевод без подтверждения через PageObject + проверка алерта
+        new MoneyTransferPage()
+                .open()
+                .fillFormAndSendWithoutConfirm(
+                        senderAccountNumber,
+                        recipientAccountNumber,
+                        String.valueOf(amount)
+                )
+                .checkAlertMessageAndAccept(
+                        BankAlert.TRANSFER_FIELDS_NOT_CONFIRMED.getMessage()
+                );
+
+        // 4) API: балансы без изменений
+        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                senderAccountNumber
+        );
+        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
+                userSpec2,
+                ResponseSpecs.requestReturnsOK(),
+                recipientAccountNumber
+        );
+
+        assertThat(updatedSender.getBalance())
+                .isEqualByComparingTo(BigDecimal.valueOf(amount));
+        assertThat(updatedRecipient.getBalance())
+                .isEqualByComparingTo(BigDecimal.ZERO);
     }
 
+    @Test
+        // Негативный тест: перевод суммы больше доступного баланса - ответ от бека
+    void transferAmountGreaterThanBalanceError() {
+        // сумма, на которую пополним счёт отправителя
+        int initialAmount = generateValidAmount();
+        // сумма перевода (строго больше остатка на счёте)
+        int transferAmount = initialAmount + ThreadLocalRandom.current().nextInt(1, initialAmount + 1);
+
+        // 1) пополнить баланс отправителя (API) на initialAmount
+        DepositRequest depositPayload = DepositRequest.builder()
+                .id(senderAccount.getId())
+                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
+                .build();
+
+        AccountSteps.deposit(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                depositPayload
+        );
+
+        // 2) авторизация в UI через токен
+        authAsUser(user);
+
+        String senderAccountNumber = senderAccount.getAccountNumber();
+        String recipientAccountNumber = recipientAccount.getAccountNumber();
+
+        // 3) попытка перевода суммы больше баланса через UI + проверка алерта об ошибке
+        new MoneyTransferPage()
+                .open()
+                .transfer(senderAccountNumber, recipientAccountNumber, String.valueOf(transferAmount))
+                .checkAlertMessageAndAccept(
+                        BankAlert.TRANSFER_INVALID_INSUFFICIENT_FUNDS.getMessage()
+                );
+
+        // 4) API: баланс отправителя не изменился и равен initialAmount
+        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                senderAccountNumber
+        );
+
+        // 5) API: баланс получателя = 0
+        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
+                userSpec2,
+                ResponseSpecs.requestReturnsOK(),
+                recipientAccountNumber
+        );
+
+        assertThat(updatedSender.getBalance())
+                .isEqualByComparingTo(BigDecimal.valueOf(initialAmount));
+
+        assertThat(updatedRecipient.getBalance())
+                .isEqualByComparingTo(BigDecimal.ZERO);
+    }
 
     @Test
-// Позитивный тест: повторный перевод денег одному и тому же пользователю с той же суммой
+        // Позитивный тест: повторный перевод денег одному и тому же пользователю с той же суммой
     void repeatTransferToSameUserSuccess() {
-        int amount = 1000;
+        // сумма одного перевода
+        int transferAmount = generateAmountForTwoTransfersWithinDepositLimit();
+        // общий баланс отправителя для двух одинаковых переводов
+        int initialAmount = transferAmount * 2;
 
-        // 1) пользователи (API)
-        CreateUserRequest user = AdminSteps.createUser();
-        CreateUserRequest user2 = AdminSteps.createUser();
-
-        // 2) авторизация для API
-        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
-        var userSpec2 = RequestSpecs.authAsUser(user2.getUsername(), user2.getPassword());
-
-        // 3) создание счетов (API)
-        AccountResponse account = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated());
-        String accountNumber = account.getAccountNumber();
-        AccountResponse account2 = AccountSteps.createAccount(userSpec2, ResponseSpecs.entityWasCreated());
-        String accountNumber2 = account2.getAccountNumber();
-
-        // 4) пополнить баланс отправителя (API)
-        Long accountId = account.getId();
-        var deposit = models.DepositRequest.builder()
-                .id(accountId)
-                .balance(java.math.BigDecimal.valueOf(amount * 2L).setScale(2, java.math.RoundingMode.HALF_UP))
+        // 1) пополнить баланс отправителя (API) на initialAmount
+        DepositRequest deposit = DepositRequest.builder()
+                .id(senderAccount.getId())
+                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
                 .build();
+
         AccountSteps.deposit(userSpec, ResponseSpecs.requestReturnsOK(), deposit);
 
-        // 5.1 подготовить сумму
-        var amountBD = java.math.BigDecimal.valueOf(amount).setScale(2, java.math.RoundingMode.HALF_UP);
-        // 5.2 собрать запрос перевода
-        var firstTransfer = models.TransferRequest.builder()
-                .senderAccountId(account.getId())
-                .receiverAccountId(account2.getId())
-                .amount(amountBD)
+        // 1.1 подготовить сумму для первого перевода
+        BigDecimal transferAmountBD = BigDecimal.valueOf(transferAmount)
+                .setScale(2, RoundingMode.HALF_UP);
+
+        // 1.2 собрать запрос первого перевода
+        TransferRequest firstTransfer = TransferRequest.builder()
+                .senderAccountId(senderAccount.getId())
+                .receiverAccountId(recipientAccount.getId())
+                .amount(transferAmountBD)
                 .build();
-        // 5.3 выполнить перевод (ожидаем 200 OK)
-        models.TransferResponse firstTransferResp = requests.steps.AccountSteps.transfer(
-                userSpec, specs.ResponseSpecs.requestReturnsOK(), firstTransfer
+
+        // 1.3 выполнить первый перевод (ожидаем 200 OK)
+        AccountSteps.transfer(userSpec, ResponseSpecs.requestReturnsOK(), firstTransfer);
+
+        // 2) авторизация в UI через токен
+        authAsUser(user);
+
+        MoneyTransferPage moneyTransferPage = new MoneyTransferPage().open();
+
+        // 3) повторный перевод через UI
+        moneyTransferPage
+                .openRepeatTransferTab()
+                .openRepeatTransferModal(transferAmount)
+                .fillRepeatTransferFormAndSubmit(String.valueOf(senderAccount.getId()), transferAmount)
+                .checkRepeatSuccessAlert(
+                        transferAmount,
+                        senderAccount.getId(),
+                        BankAlert.TRANSFER_REPEAT_SUCCESS_PREFIX.getMessage()
+                );
+
+        String senderAccountNumber = senderAccount.getAccountNumber();
+        String recipientAccountNumber = recipientAccount.getAccountNumber();
+
+        // 4) API: финальные балансы — у отправителя 0, у получателя transferAmount * 2
+        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                senderAccountNumber
         );
 
-        // 5) логин — токен в localStorage
-        String authHeader = new CrudRequester(
-                RequestSpecs.unauthSpec(), Endpoint.LOGIN, ResponseSpecs.requestReturnsOK())
-                .post(LoginUserRequest.builder()
-                        .username(user.getUsername())
-                        .password(user.getPassword())
-                        .build())
-                .extract()
-                .header("Authorization");
-        open("/");
-        executeJavaScript("localStorage.setItem('authToken', arguments[0])", authHeader);
-        open("/transfer");
+        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
+                userSpec2,
+                ResponseSpecs.requestReturnsOK(),
+                recipientAccountNumber
+        );
 
-        // 6) переход на вкладку повторный перевод
-        $$("button").findBy(text("Transfer Again")).shouldBe(visible, enabled).click();
+        assertThat(updatedSender.getBalance())
+                .isEqualByComparingTo(BigDecimal.ZERO);
 
-        // 7) клик "Repeat" по нужной записи
-        String txType = "TRANSFER_OUT";
-        String amtToken = "$" + amount;
-        SelenideElement txItem = $$("li.list-group-item")
-                .filterBy(text(txType))
-                .filterBy(text(amtToken))
-                .first()
-                .shouldBe(visible);
-        txItem.$("button").shouldHave(text("Repeat")).shouldBe(visible, enabled).click();
-
-        // 7.1 ОР: открылось модальное окно "Repeat Transfer"
-        SelenideElement modal = $(".modal.show").shouldBe(visible);
-        modal.$(".modal-title").shouldBe(visible).shouldHave(text("Repeat Transfer"));
-
-        // 8) выбрать счёт в модальном окне
-        SelenideElement accountSelect = modal.$("select.form-control").shouldBe(visible, enabled);
-        String senderId = String.valueOf(account.getId());
-        accountSelect.selectOptionByValue(senderId);
-        accountSelect.$("option:checked").shouldHave(value(senderId)); // ОР: выбран нужный счёт
-
-        // 9) проверка той же суммы
-        modal.$("input.form-control[type='number']")
-                .shouldBe(visible, enabled)
-                .shouldHave(value(String.valueOf(amount)));
-
-        // 10) активировать чекбокс
-        modal.$("#confirmCheck").shouldBe(visible, enabled).setSelected(true).shouldBe(checked);
-
-        // 11) нажать "Send Transfer"
-        modal.$("button.btn-success").shouldBe(visible, enabled).shouldHave(text("Send Transfer")).click();
-
-        // 12) ОР: появился alert с корректными ID счетов
-        Alert alert = switchTo().alert();
-        String alertText = alert.getText();
-        String fromId = String.valueOf(account.getId());
-        assertThat(alertText)
-                .contains("Transfer of $" + amount)
-                .contains("from Account " + fromId)
-                .contains(" to " + fromId);
-        alert.accept();
-
-        // 12) API: финальные балансы — у отправителя 0, у получателя amount * 2
-        AccountResponse[] senderAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec)
-                .when().get("customer/accounts")
-                .then().statusCode(200)
-                .extract().as(AccountResponse[].class);
-        AccountResponse updatedSender = Arrays.stream(senderAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber))
-                .findFirst().orElseThrow();
-        assertThat(updatedSender.getBalance()).isEqualByComparingTo(BigDecimal.valueOf(0));
-
-        AccountResponse[] recipientAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec2)
-                .when().get("customer/accounts")
-                .then().statusCode(200)
-                .extract().as(AccountResponse[].class);
-        AccountResponse updatedRecipient = Arrays.stream(recipientAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber2))
-                .findFirst().orElseThrow();
-        assertThat(updatedRecipient.getBalance()).isEqualByComparingTo(BigDecimal.valueOf(amount * 2L));
+        assertThat(updatedRecipient.getBalance())
+                .isEqualByComparingTo(BigDecimal.valueOf(transferAmount * 2L));
     }
 
     @Test
 // Позитивный тест: повторный перевод денег одному и тому же пользователю с изменением суммы
     void repeatTransferToSameUserChangedAmountSuccess() {
-        int amount = 1000;
+        // сумма первого перевода (минимум 2, чтобы можно было изменить сумму)
+        int firstTransferAmount = generateFirstTransferAmountWithinDepositLimit();
+        // сумма повторного перевода (меньше первой и так, чтобы first + second ≤ 5000)
+        int secondTransferAmount = generateSecondTransferAmountWithinDepositLimit(firstTransferAmount);
+        // общий баланс отправителя: хватает на оба перевода
+        int initialAmount = firstTransferAmount + secondTransferAmount;
 
-        // 1) пользователи (API)
-        CreateUserRequest user = AdminSteps.createUser();
-        CreateUserRequest user2 = AdminSteps.createUser();
-
-        // 2) авторизация для API
-        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
-        var userSpec2 = RequestSpecs.authAsUser(user2.getUsername(), user2.getPassword());
-
-        // 3) создание счетов (API)
-        AccountResponse account = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated());
-        String accountNumber = account.getAccountNumber();
-        AccountResponse account2 = AccountSteps.createAccount(userSpec2, ResponseSpecs.entityWasCreated());
-        String accountNumber2 = account2.getAccountNumber();
-
-        // 4) пополнить баланс отправителя (API)
-        Long accountId = account.getId();
-        var deposit = models.DepositRequest.builder()
-                .id(accountId)
-                .balance(java.math.BigDecimal.valueOf(amount * 2L).setScale(2, java.math.RoundingMode.HALF_UP))
+        // 1) пополнить баланс отправителя (API) на initialAmount
+        DepositRequest deposit = DepositRequest.builder()
+                .id(senderAccount.getId())
+                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
                 .build();
-        AccountSteps.deposit(userSpec, ResponseSpecs.requestReturnsOK(), deposit);
 
-        // 5.1 подготовить сумму
-        var amountBD = java.math.BigDecimal.valueOf(amount).setScale(2, java.math.RoundingMode.HALF_UP);
-        // 5.2 собрать запрос перевода
-        var firstTransfer = models.TransferRequest.builder()
-                .senderAccountId(account.getId())
-                .receiverAccountId(account2.getId())
-                .amount(amountBD)
-                .build();
-        // 5.3 выполнить перевод (ожидаем 200 OK)
-        models.TransferResponse firstTransferResp = requests.steps.AccountSteps.transfer(
-                userSpec, specs.ResponseSpecs.requestReturnsOK(), firstTransfer
+        AccountSteps.deposit(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                deposit
         );
 
-        // 5) логин — токен в localStorage
-        String authHeader = new CrudRequester(
-                RequestSpecs.unauthSpec(), Endpoint.LOGIN, ResponseSpecs.requestReturnsOK())
-                .post(LoginUserRequest.builder()
-                        .username(user.getUsername())
-                        .password(user.getPassword())
-                        .build())
-                .extract()
-                .header("Authorization");
-        open("/");
-        executeJavaScript("localStorage.setItem('authToken', arguments[0])", authHeader);
-        open("/transfer");
+        // 1.1 подготовить сумму для первого перевода
+        BigDecimal firstTransferAmountBD = BigDecimal.valueOf(firstTransferAmount)
+                .setScale(2, RoundingMode.HALF_UP);
 
-        // 6) переход на вкладку повторный перевод
-        $$("button").findBy(text("Transfer Again")).shouldBe(visible, enabled).click();
+        // 1.2 собрать запрос первого перевода
+        TransferRequest firstTransfer = TransferRequest.builder()
+                .senderAccountId(senderAccount.getId())
+                .receiverAccountId(recipientAccount.getId())
+                .amount(firstTransferAmountBD)
+                .build();
 
-        // 7) клик "Repeat" по нужной записи
-        String txType = "TRANSFER_OUT";
-        String amtToken = "$" + amount;
-        SelenideElement txItem = $$("li.list-group-item")
-                .filterBy(text(txType))
-                .filterBy(text(amtToken))
-                .first()
-                .shouldBe(visible);
-        txItem.$("button").shouldHave(text("Repeat")).shouldBe(visible, enabled).click();
+        // 1.3 выполнить первый перевод (ожидаем 200 OK)
+        AccountSteps.transfer(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                firstTransfer
+        );
 
-        // 7.1 ОР: открылось модальное окно "Repeat Transfer"
-        SelenideElement modal = $(".modal.show").shouldBe(visible);
-        modal.$(".modal-title").shouldBe(visible).shouldHave(text("Repeat Transfer"));
+        // 2) авторизация в UI через токен
+        authAsUser(user);
 
-        // 8) выбрать счёт в модальном окне
-        SelenideElement accountSelect = modal.$("select.form-control").shouldBe(visible, enabled);
-        String senderId = String.valueOf(account.getId());
-        accountSelect.selectOptionByValue(senderId);
-        accountSelect.$("option:checked").shouldHave(value(senderId)); // ОР: выбран нужный счёт
+        MoneyTransferPage moneyTransferPage = new MoneyTransferPage().open();
 
-        // 9) изменить сумму на меньшую, чем текущий баланс отправителя
-        int newAmount = amount / 10;
-        SelenideElement amountInput = modal.$("input.form-control[type='number']").shouldBe(visible, enabled);
-        amountInput.clear();
-        amountInput.setValue(String.valueOf(newAmount))
-                .shouldHave(value(String.valueOf(newAmount)));
+        // 3) повторный перевод через UI с изменением суммы
+        moneyTransferPage
+                .openRepeatTransferTab()
+                .openRepeatTransferModal(firstTransferAmount)
+                .fillRepeatTransferFormWithNewAmountAndSubmit(
+                        String.valueOf(senderAccount.getId()),
+                        secondTransferAmount
+                )
+                .checkRepeatSuccessAlert(
+                        secondTransferAmount,
+                        senderAccount.getId(),
+                        BankAlert.TRANSFER_REPEAT_SUCCESS_PREFIX.getMessage()
+                );
 
-        // 10) активировать чекбокс
-        modal.$("#confirmCheck").shouldBe(visible, enabled).setSelected(true).shouldBe(checked);
+        String senderAccountNumber = senderAccount.getAccountNumber();
+        String recipientAccountNumber = recipientAccount.getAccountNumber();
 
-        // 11) нажать "Send Transfer"
-        modal.$("button.btn-success").shouldBe(visible, enabled).shouldHave(text("Send Transfer")).click();
+        // 4) API: финальные балансы — у отправителя 0, у получателя firstTransferAmount + secondTransferAmount
+        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                senderAccountNumber
+        );
 
-        // 12) ОР: появился alert
-        Alert alert = switchTo().alert();
-        String alertText = alert.getText();
-        String fromId = String.valueOf(account.getId());
-        assertThat(alertText)
-                .contains("Transfer of $" + newAmount)
-                .contains("from Account " + fromId)
-                .contains(" to " + fromId);
-        alert.accept();
+        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
+                userSpec2,
+                ResponseSpecs.requestReturnsOK(),
+                recipientAccountNumber
+        );
 
-        // 12) API: финальные балансы — у отправителя amount - newAmount, у получателя amount + newAmount
-        AccountResponse[] senderAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec)
-                .when().get("customer/accounts")
-                .then().statusCode(200)
-                .extract().as(AccountResponse[].class);
-        AccountResponse updatedSender = Arrays.stream(senderAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber))
-                .findFirst().orElseThrow();
-        BigDecimal expectedSender = BigDecimal.valueOf(amount - newAmount);
-        assertThat(updatedSender.getBalance()).isEqualByComparingTo(expectedSender);
+        assertThat(updatedSender.getBalance())
+                .isEqualByComparingTo(BigDecimal.ZERO);
 
-        AccountResponse[] recipientAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec2)
-                .when().get("customer/accounts")
-                .then().statusCode(200)
-                .extract().as(AccountResponse[].class);
-        AccountResponse updatedRecipient = Arrays.stream(recipientAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber2))
-                .findFirst().orElseThrow();
-        BigDecimal expectedRecipient = BigDecimal.valueOf(amount + newAmount);
-        assertThat(updatedRecipient.getBalance()).isEqualByComparingTo(expectedRecipient);
-
+        assertThat(updatedRecipient.getBalance())
+                .isEqualByComparingTo(
+                        BigDecimal.valueOf(firstTransferAmount + secondTransferAmount)
+                );
     }
 
     @Test
 // Позитивный тест: отмена повторного перевода
     void cancelRepeatTransfer() {
-        int amount = 1000;
+        // сумма первого перевода
+        int amount = generateAmountForTwoTransfersWithinDepositLimit();
+        // общий баланс отправителя для двух одинаковых переводов
+        int initialAmount = amount * 2;
 
-        // 1) пользователи (API)
-        CreateUserRequest user = AdminSteps.createUser();
-        CreateUserRequest user2 = AdminSteps.createUser();
-
-        // 2) авторизация для API
-        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
-        var userSpec2 = RequestSpecs.authAsUser(user2.getUsername(), user2.getPassword());
-
-        // 3) создание счетов (API)
-        AccountResponse account = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated());
-        String accountNumber = account.getAccountNumber();
-        AccountResponse account2 = AccountSteps.createAccount(userSpec2, ResponseSpecs.entityWasCreated());
-        String accountNumber2 = account2.getAccountNumber();
-
-        // 4) пополнить баланс отправителя (API)
-        Long accountId = account.getId();
-        var deposit = models.DepositRequest.builder()
-                .id(accountId)
-                .balance(java.math.BigDecimal.valueOf(amount * 2L).setScale(2, java.math.RoundingMode.HALF_UP))
+        // 1) пополнить баланс отправителя (API) на initialAmount
+        DepositRequest deposit = DepositRequest.builder()
+                .id(senderAccount.getId())
+                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
                 .build();
-        AccountSteps.deposit(userSpec, ResponseSpecs.requestReturnsOK(), deposit);
 
-        // 5.1 подготовить сумму
-        var amountBD = java.math.BigDecimal.valueOf(amount).setScale(2, java.math.RoundingMode.HALF_UP);
-        // 5.2 собрать запрос перевода
-        var firstTransfer = models.TransferRequest.builder()
-                .senderAccountId(account.getId())
-                .receiverAccountId(account2.getId())
-                .amount(amountBD)
-                .build();
-        // 5.3 выполнить перевод (ожидаем 200 OK)
-        models.TransferResponse firstTransferResp = requests.steps.AccountSteps.transfer(
-                userSpec, specs.ResponseSpecs.requestReturnsOK(), firstTransfer
+        AccountSteps.deposit(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                deposit
         );
 
-        // 5) логин — токен в localStorage
-        String authHeader = new CrudRequester(
-                RequestSpecs.unauthSpec(), Endpoint.LOGIN, ResponseSpecs.requestReturnsOK())
-                .post(LoginUserRequest.builder()
-                        .username(user.getUsername())
-                        .password(user.getPassword())
-                        .build())
-                .extract()
-                .header("Authorization");
-        open("/");
-        executeJavaScript("localStorage.setItem('authToken', arguments[0])", authHeader);
-        open("/transfer");
+        // 1.1 подготовить сумму для первого перевода
+        BigDecimal amountBD = BigDecimal.valueOf(amount)
+                .setScale(2, RoundingMode.HALF_UP);
 
-        // 6) переход на вкладку повторный перевод
-        $$("button").findBy(text("Transfer Again")).shouldBe(visible, enabled).click();
+        // 1.2 собрать запрос первого перевода
+        TransferRequest firstTransfer = TransferRequest.builder()
+                .senderAccountId(senderAccount.getId())
+                .receiverAccountId(recipientAccount.getId())
+                .amount(amountBD)
+                .build();
 
-        // 7) клик "Repeat" по нужной записи
-        String txType = "TRANSFER_OUT";
-        String amtToken = "$" + amount;
-        SelenideElement txItem = $$("li.list-group-item")
-                .filterBy(text(txType))
-                .filterBy(text(amtToken))
-                .first()
-                .shouldBe(visible);
-        txItem.$("button").shouldHave(text("Repeat")).shouldBe(visible, enabled).click();
+        // 1.3 выполнить первый перевод (ожидаем 200 OK)
+        AccountSteps.transfer(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                firstTransfer
+        );
 
-        // 7.1 ОР: открылось модальное окно "Repeat Transfer"
-        SelenideElement modal = $(".modal.show").shouldBe(visible);
-        modal.$(".modal-title").shouldBe(visible).shouldHave(text("Repeat Transfer"));
+        // 2) авторизация в UI через токен
+        authAsUser(user);
 
-        // 8) выбрать счёт в модальном окне
-        SelenideElement accountSelect = modal.$("select.form-control").shouldBe(visible, enabled);
-        String senderId = String.valueOf(account.getId());
-        accountSelect.selectOptionByValue(senderId);
-        accountSelect.$("option:checked").shouldHave(value(senderId));
+        MoneyTransferPage moneyTransferPage = new MoneyTransferPage().open();
 
+        // 3) открыть вкладку повторного перевода и отменить повтор
+        moneyTransferPage
+                .openRepeatTransferTab()
+                .openRepeatTransferModal(amount)
+                .cancelRepeatTransfer(String.valueOf(senderAccount.getId()));
 
-        // 9) активировать чекбокс
-        modal.$("#confirmCheck").shouldBe(visible, enabled).setSelected(true).shouldBe(checked);
+        String senderAccountNumber = senderAccount.getAccountNumber();
+        String recipientAccountNumber = recipientAccount.getAccountNumber();
 
-        // 10) закрыть окно повторного перевода
-        modal.$("button.btn-secondary").shouldBe(visible, enabled).shouldHave(text("Cancel")).click();
+        // 4) API: финальные балансы — у отправителя amount, у получателя amount
+        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                senderAccountNumber
+        );
 
-        // 11) ОР: закрытие модульного окна
-        modal.should(disappear);
+        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
+                userSpec2,
+                ResponseSpecs.requestReturnsOK(),
+                recipientAccountNumber
+        );
 
-        // 12) API: финальные балансы
-        AccountResponse[] senderAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec)
-                .when().get("customer/accounts")
-                .then().statusCode(200)
-                .extract().as(AccountResponse[].class);
-        AccountResponse updatedSender = Arrays.stream(senderAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber))
-                .findFirst().orElseThrow();
-        BigDecimal expectedSender = BigDecimal.valueOf(amount);
-        assertThat(updatedSender.getBalance()).isEqualByComparingTo(expectedSender);
+        BigDecimal expected = BigDecimal.valueOf(amount);
 
-        AccountResponse[] recipientAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec2)
-                .when().get("customer/accounts")
-                .then().statusCode(200)
-                .extract().as(AccountResponse[].class);
-        AccountResponse updatedRecipient = Arrays.stream(recipientAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber2))
-                .findFirst().orElseThrow();
-        BigDecimal expectedRecipient = BigDecimal.valueOf(amount);
-        assertThat(updatedRecipient.getBalance()).isEqualByComparingTo(expectedRecipient);
+        assertThat(updatedSender.getBalance())
+                .isEqualByComparingTo(expected);
 
+        assertThat(updatedRecipient.getBalance())
+                .isEqualByComparingTo(expected);
     }
 
     @Test
 // Негативный тест: повторный перевод без выбора исходного счёта
     void repeatTransferWithoutSourceAccount() {
-        int amount = 1000;
+        // сумма первого перевода
+        int amount = generateAmountForTwoTransfersWithinDepositLimit();
+        // общий баланс отправителя для двух одинаковых переводов
+        int initialAmount = amount * 2;
 
-        // 1) пользователи (API)
-        CreateUserRequest user = AdminSteps.createUser();
-        CreateUserRequest user2 = AdminSteps.createUser();
-
-        // 2) авторизация для API
-        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
-        var userSpec2 = RequestSpecs.authAsUser(user2.getUsername(), user2.getPassword());
-
-        // 3) создание счетов (API)
-        AccountResponse account = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated());
-        String accountNumber = account.getAccountNumber();
-        AccountResponse account2 = AccountSteps.createAccount(userSpec2, ResponseSpecs.entityWasCreated());
-        String accountNumber2 = account2.getAccountNumber();
-
-        // 4) пополнить баланс отправителя (API)
-        Long accountId = account.getId();
-        var deposit = models.DepositRequest.builder()
-                .id(accountId)
-                .balance(java.math.BigDecimal.valueOf(amount * 2L).setScale(2, java.math.RoundingMode.HALF_UP))
+        // 1) пополнить баланс отправителя (API) на initialAmount
+        DepositRequest deposit = DepositRequest.builder()
+                .id(senderAccount.getId())
+                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
                 .build();
-        AccountSteps.deposit(userSpec, ResponseSpecs.requestReturnsOK(), deposit);
 
-        // 5.1 подготовить сумму
-        var amountBD = java.math.BigDecimal.valueOf(amount).setScale(2, java.math.RoundingMode.HALF_UP);
-        // 5.2 собрать запрос перевода
-        var firstTransfer = models.TransferRequest.builder()
-                .senderAccountId(account.getId())
-                .receiverAccountId(account2.getId())
-                .amount(amountBD)
-                .build();
-        // 5.3 выполнить перевод (ожидаем 200 OK)
-        models.TransferResponse firstTransferResp = requests.steps.AccountSteps.transfer(
-                userSpec, specs.ResponseSpecs.requestReturnsOK(), firstTransfer
+        AccountSteps.deposit(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                deposit
         );
 
-        // 5) логин — токен в localStorage
-        String authHeader = new CrudRequester(
-                RequestSpecs.unauthSpec(), Endpoint.LOGIN, ResponseSpecs.requestReturnsOK())
-                .post(LoginUserRequest.builder()
-                        .username(user.getUsername())
-                        .password(user.getPassword())
-                        .build())
-                .extract()
-                .header("Authorization");
-        open("/");
-        executeJavaScript("localStorage.setItem('authToken', arguments[0])", authHeader);
-        open("/transfer");
+        // 1.1 подготовить сумму
+        BigDecimal amountBD = BigDecimal.valueOf(amount)
+                .setScale(2, RoundingMode.HALF_UP);
 
-        // 6) переход на вкладку повторный перевод
-        $$("button").findBy(text("Transfer Again")).shouldBe(visible, enabled).click();
+        // 1.2 собрать запрос первого перевода
+        TransferRequest firstTransfer = TransferRequest.builder()
+                .senderAccountId(senderAccount.getId())
+                .receiverAccountId(recipientAccount.getId())
+                .amount(amountBD)
+                .build();
 
-        // 7) клик "Repeat" по нужной записи
-        String txType = "TRANSFER_OUT";
-        String amtToken = "$" + amount;
-        SelenideElement txItem = $$("li.list-group-item")
-                .filterBy(text(txType))
-                .filterBy(text(amtToken))
-                .first()
-                .shouldBe(visible);
-        txItem.$("button").shouldHave(text("Repeat")).shouldBe(visible, enabled).click();
+        // 1.3 выполнить первый перевод (ожидаем 200 OK)
+        AccountSteps.transfer(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                firstTransfer
+        );
 
-        // 7.1 ОР: открылось модальное окно "Repeat Transfer"
-        SelenideElement modal = $(".modal.show").shouldBe(visible);
-        modal.$(".modal-title").shouldBe(visible).shouldHave(text("Repeat Transfer"));
+        // 2) авторизация в UI через токен
+        authAsUser(user);
 
+        MoneyTransferPage moneyTransferPage = new MoneyTransferPage().open();
 
-        // 8) активировать чекбокс
-        modal.$("#confirmCheck").shouldBe(visible, enabled).setSelected(true).shouldBe(checked);
+        // 3) попытка повторного перевода без выбора исходного счёта
+        moneyTransferPage
+                .openRepeatTransferTab()
+                .openRepeatTransferModal(amount)
+                .submitRepeatWithoutSourceAccount();
 
-        // 9) ОР кнопка Send Transfer не кликтабельная
-        SelenideElement sendBtn = modal.$("button.btn-success")
-                .shouldBe(visible)
-                .shouldHave(text("Send Transfer"));
-        sendBtn.shouldBe(disabled);
+        // 4) закрыть окно повторного перевода
+        moneyTransferPage.closeRepeatTransferModal();
 
-        // 10) закрыть окно повторного перевода
-        modal.$("button.btn-secondary").shouldBe(visible, enabled).shouldHave(text("Cancel")).click();
+        String senderAccountNumber = senderAccount.getAccountNumber();
+        String recipientAccountNumber = recipientAccount.getAccountNumber();
 
+        // 5) API: финальные балансы — у отправителя amount, у получателя amount
+        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                senderAccountNumber
+        );
 
-        // 11) API: финальные балансы
-        AccountResponse[] senderAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec)
-                .when().get("customer/accounts")
-                .then().statusCode(200)
-                .extract().as(AccountResponse[].class);
-        AccountResponse updatedSender = Arrays.stream(senderAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber))
-                .findFirst().orElseThrow();
-        BigDecimal expectedSender = BigDecimal.valueOf(amount);
-        assertThat(updatedSender.getBalance()).isEqualByComparingTo(expectedSender);
+        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
+                userSpec2,
+                ResponseSpecs.requestReturnsOK(),
+                recipientAccountNumber
+        );
 
-        AccountResponse[] recipientAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec2)
-                .when().get("customer/accounts")
-                .then().statusCode(200)
-                .extract().as(AccountResponse[].class);
-        AccountResponse updatedRecipient = Arrays.stream(recipientAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber2))
-                .findFirst().orElseThrow();
-        BigDecimal expectedRecipient = BigDecimal.valueOf(amount);
-        assertThat(updatedRecipient.getBalance()).isEqualByComparingTo(expectedRecipient);
+        BigDecimal expected = BigDecimal.valueOf(amount);
 
+        assertThat(updatedSender.getBalance())
+                .isEqualByComparingTo(expected);
+        assertThat(updatedRecipient.getBalance())
+                .isEqualByComparingTo(expected);
     }
 
     @Test
 // Негативный тест: повторный перевод с пустым полем "Сумма"
     void repeatTransferWithEmptyAmount() {
-        int amount = 1000;
+        // сумма первого перевода
+        int amount = generateAmountForTwoTransfersWithinDepositLimit();
+        // общий баланс отправителя для двух одинаковых переводов
+        int initialAmount = amount * 2;
 
-        // 1) пользователи (API)
-        CreateUserRequest user = AdminSteps.createUser();
-        CreateUserRequest user2 = AdminSteps.createUser();
-
-        // 2) авторизация для API
-        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
-        var userSpec2 = RequestSpecs.authAsUser(user2.getUsername(), user2.getPassword());
-
-        // 3) создание счетов (API)
-        AccountResponse account = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated());
-        String accountNumber = account.getAccountNumber();
-        AccountResponse account2 = AccountSteps.createAccount(userSpec2, ResponseSpecs.entityWasCreated());
-        String accountNumber2 = account2.getAccountNumber();
-
-        // 4) пополнить баланс отправителя (API)
-        Long accountId = account.getId();
-        var deposit = models.DepositRequest.builder()
-                .id(accountId)
-                .balance(java.math.BigDecimal.valueOf(amount * 2L).setScale(2, java.math.RoundingMode.HALF_UP))
+        // 1) пополнить баланс отправителя (API) на initialAmount
+        DepositRequest deposit = DepositRequest.builder()
+                .id(senderAccount.getId())
+                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
                 .build();
-        AccountSteps.deposit(userSpec, ResponseSpecs.requestReturnsOK(), deposit);
 
-        // 5.1 подготовить сумму
-        var amountBD = java.math.BigDecimal.valueOf(amount).setScale(2, java.math.RoundingMode.HALF_UP);
-        // 5.2 собрать запрос перевода
-        var firstTransfer = models.TransferRequest.builder()
-                .senderAccountId(account.getId())
-                .receiverAccountId(account2.getId())
-                .amount(amountBD)
-                .build();
-        // 5.3 выполнить перевод (ожидаем 200 OK)
-        models.TransferResponse firstTransferResp = requests.steps.AccountSteps.transfer(
-                userSpec, specs.ResponseSpecs.requestReturnsOK(), firstTransfer
+        AccountSteps.deposit(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                deposit
         );
 
-        // 5) логин — токен в localStorage
-        String authHeader = new CrudRequester(
-                RequestSpecs.unauthSpec(), Endpoint.LOGIN, ResponseSpecs.requestReturnsOK())
-                .post(LoginUserRequest.builder()
-                        .username(user.getUsername())
-                        .password(user.getPassword())
-                        .build())
-                .extract()
-                .header("Authorization");
-        open("/");
-        executeJavaScript("localStorage.setItem('authToken', arguments[0])", authHeader);
-        open("/transfer");
+        // 1.1 подготовить сумму
+        BigDecimal amountBD = BigDecimal.valueOf(amount)
+                .setScale(2, RoundingMode.HALF_UP);
 
-        // 6) переход на вкладку повторный перевод
-        $$("button").findBy(text("Transfer Again")).shouldBe(visible, enabled).click();
+        // 1.2 собрать запрос первого перевода
+        TransferRequest firstTransfer = TransferRequest.builder()
+                .senderAccountId(senderAccount.getId())
+                .receiverAccountId(recipientAccount.getId())
+                .amount(amountBD)
+                .build();
 
-        // 7) клик "Repeat" по нужной записи
-        String txType = "TRANSFER_OUT";
-        String amtToken = "$" + amount;
-        SelenideElement txItem = $$("li.list-group-item")
-                .filterBy(text(txType))
-                .filterBy(text(amtToken))
-                .first()
-                .shouldBe(visible);
-        txItem.$("button").shouldHave(text("Repeat")).shouldBe(visible, enabled).click();
+        // 1.3 выполнить первый перевод (ожидаем 200 OK)
+        AccountSteps.transfer(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                firstTransfer
+        );
 
-        // 7.1 ОР: открылось модальное окно "Repeat Transfer"
-        SelenideElement modal = $(".modal.show").shouldBe(visible);
-        modal.$(".modal-title").shouldBe(visible).shouldHave(text("Repeat Transfer"));
+        // 2) авторизация в UI через токен
+        authAsUser(user);
 
-        // 8) выбрать счёт в модальном окне
-        SelenideElement accountSelect = modal.$("select.form-control").shouldBe(visible, enabled);
-        String senderId = String.valueOf(account.getId());
-        accountSelect.selectOptionByValue(senderId);
-        accountSelect.$("option:checked").shouldHave(value(senderId));
+        MoneyTransferPage moneyTransferPage = new MoneyTransferPage().open();
 
-        // 9) очистить поле сумма
-        SelenideElement amountInput = modal.$("input.form-control[type='number']").shouldBe(visible, enabled);
-        amountInput.sendKeys(Keys.chord(Keys.CONTROL, "a"));
-        amountInput.sendKeys(Keys.DELETE);
-        amountInput.shouldHave(value(""));
+        // 3) попытка повторного перевода с пустой суммой
+        moneyTransferPage
+                .openRepeatTransferTab()
+                .openRepeatTransferModal(amount)
+                .submitRepeatWithEmptyAmount(String.valueOf(senderAccount.getId()));
 
-
-        // 10) активировать чекбокс
-        modal.$("#confirmCheck").shouldBe(visible, enabled).setSelected(true).shouldBe(checked);
-
-        // 11) нажать "Send Transfer"
-        modal.$("button.btn-success").shouldBe(visible, enabled).shouldHave(text("Send Transfer")).click();
-
-        // 12) ОР: появился alert
+        // 4) ОР: появился alert с текстом "Transfer failed: Please try again"
         Alert alert = switchTo().alert();
         String alertText = alert.getText();
         assertThat(alertText)
-                .contains("Transfer failed: Please try again");
+                .contains(BankAlert.TRANSFER_FAILED_RETRY.getMessage());
         alert.accept();
 
-        // 13) API: финальные балансы
-        AccountResponse[] senderAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec)
-                .when().get("customer/accounts")
-                .then().statusCode(200)
-                .extract().as(AccountResponse[].class);
-        AccountResponse updatedSender = Arrays.stream(senderAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber))
-                .findFirst().orElseThrow();
-        BigDecimal expectedSender = BigDecimal.valueOf(amount);
-        assertThat(updatedSender.getBalance()).isEqualByComparingTo(expectedSender);
+        String senderAccountNumber = senderAccount.getAccountNumber();
+        String recipientAccountNumber = recipientAccount.getAccountNumber();
 
-        AccountResponse[] recipientAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec2)
-                .when().get("customer/accounts")
-                .then().statusCode(200)
-                .extract().as(AccountResponse[].class);
-        AccountResponse updatedRecipient = Arrays.stream(recipientAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber2))
-                .findFirst().orElseThrow();
-        BigDecimal expectedRecipient = BigDecimal.valueOf(amount);
-        assertThat(updatedRecipient.getBalance()).isEqualByComparingTo(expectedRecipient);
+        // 5) API: финальные балансы — у отправителя amount, у получателя amount
+        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                senderAccountNumber
+        );
 
+        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
+                userSpec2,
+                ResponseSpecs.requestReturnsOK(),
+                recipientAccountNumber
+        );
+
+        BigDecimal expected = BigDecimal.valueOf(amount);
+
+        assertThat(updatedSender.getBalance())
+                .isEqualByComparingTo(expected);
+        assertThat(updatedRecipient.getBalance())
+                .isEqualByComparingTo(expected);
     }
 
     @Test
-// Негативный тест: повторный перевод денег без активирована чек-бокса "Подтвердите правильность данных"
+// Негативный тест: повторный перевод денег без активированного чек-бокса "Подтвердите правильность данных"
     void repeatTransferWithoutConfirm() {
-        int amount = 1000;
+        // сумма первого перевода
+        int amount = generateAmountForTwoTransfersWithinDepositLimit();
+        // общий баланс отправителя для двух одинаковых переводов
+        int initialAmount = amount * 2;
 
-        // 1) пользователи (API)
-        CreateUserRequest user = AdminSteps.createUser();
-        CreateUserRequest user2 = AdminSteps.createUser();
-
-        // 2) авторизация для API
-        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
-        var userSpec2 = RequestSpecs.authAsUser(user2.getUsername(), user2.getPassword());
-
-        // 3) создание счетов (API)
-        AccountResponse account = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated());
-        String accountNumber = account.getAccountNumber();
-        AccountResponse account2 = AccountSteps.createAccount(userSpec2, ResponseSpecs.entityWasCreated());
-        String accountNumber2 = account2.getAccountNumber();
-
-        // 4) пополнить баланс отправителя (API)
-        Long accountId = account.getId();
-        var deposit = models.DepositRequest.builder()
-                .id(accountId)
-                .balance(java.math.BigDecimal.valueOf(amount * 2L).setScale(2, java.math.RoundingMode.HALF_UP))
+        // 1) пополнить баланс отправителя (API) на initialAmount
+        DepositRequest deposit = DepositRequest.builder()
+                .id(senderAccount.getId())
+                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
                 .build();
-        AccountSteps.deposit(userSpec, ResponseSpecs.requestReturnsOK(), deposit);
 
-        // 5.1 подготовить сумму
-        var amountBD = java.math.BigDecimal.valueOf(amount).setScale(2, java.math.RoundingMode.HALF_UP);
-        // 5.2 собрать запрос перевода
-        var firstTransfer = models.TransferRequest.builder()
-                .senderAccountId(account.getId())
-                .receiverAccountId(account2.getId())
-                .amount(amountBD)
-                .build();
-        // 5.3 выполнить перевод (ожидаем 200 OK)
-        models.TransferResponse firstTransferResp = requests.steps.AccountSteps.transfer(
-                userSpec, specs.ResponseSpecs.requestReturnsOK(), firstTransfer
+        AccountSteps.deposit(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                deposit
         );
 
-        // 5) логин — токен в localStorage
-        String authHeader = new CrudRequester(
-                RequestSpecs.unauthSpec(), Endpoint.LOGIN, ResponseSpecs.requestReturnsOK())
-                .post(LoginUserRequest.builder()
-                        .username(user.getUsername())
-                        .password(user.getPassword())
-                        .build())
-                .extract()
-                .header("Authorization");
-        open("/");
-        executeJavaScript("localStorage.setItem('authToken', arguments[0])", authHeader);
-        open("/transfer");
+        // 1.1 подготовить сумму
+        BigDecimal amountBD = BigDecimal.valueOf(amount)
+                .setScale(2, RoundingMode.HALF_UP);
 
-        // 6) переход на вкладку повторный перевод
-        $$("button").findBy(text("Transfer Again")).shouldBe(visible, enabled).click();
+        // 1.2 собрать запрос первого перевода
+        TransferRequest firstTransfer = TransferRequest.builder()
+                .senderAccountId(senderAccount.getId())
+                .receiverAccountId(recipientAccount.getId())
+                .amount(amountBD)
+                .build();
 
-        // 7) клик "Repeat" по нужной записи
-        String txType = "TRANSFER_OUT";
-        String amtToken = "$" + amount;
-        SelenideElement txItem = $$("li.list-group-item")
-                .filterBy(text(txType))
-                .filterBy(text(amtToken))
-                .first()
-                .shouldBe(visible);
-        txItem.$("button").shouldHave(text("Repeat")).shouldBe(visible, enabled).click();
+        // 1.3 выполнить первый перевод (ожидаем 200 OK)
+        AccountSteps.transfer(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                firstTransfer
+        );
 
-        // 7.1 ОР: открылось модальное окно "Repeat Transfer"
-        SelenideElement modal = $(".modal.show").shouldBe(visible);
-        modal.$(".modal-title").shouldBe(visible).shouldHave(text("Repeat Transfer"));
+        // 2) авторизация в UI через токен
+        authAsUser(user);
 
-        // 8) выбрать счёт в модальном окне
-        SelenideElement accountSelect = modal.$("select.form-control").shouldBe(visible, enabled);
-        String senderId = String.valueOf(account.getId());
-        accountSelect.selectOptionByValue(senderId);
-        accountSelect.$("option:checked").shouldHave(value(senderId));
+        MoneyTransferPage moneyTransferPage = new MoneyTransferPage().open();
 
-        // 9) ОР кнопка Send Transfer не кликтабельная
-        SelenideElement sendBtn = modal.$("button.btn-success")
-                .shouldBe(visible)
-                .shouldHave(text("Send Transfer"));
-        sendBtn.shouldBe(disabled);
+        // 3) попытка повторного перевода без чекбокса подтверждения
+        moneyTransferPage
+                .openRepeatTransferTab()
+                .openRepeatTransferModal(amount)
+                .submitRepeatWithoutConfirm(String.valueOf(senderAccount.getId()), amount);
 
-        // 10) закрыть окно повторного перевода
-        modal.$("button.btn-secondary").shouldBe(visible, enabled).shouldHave(text("Cancel")).click();
+        // 4) закрыть окно повторного перевода
+        moneyTransferPage.closeRepeatTransferModal();
 
-        // 11) API: финальные балансы
-        AccountResponse[] senderAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec)
-                .when().get("customer/accounts")
-                .then().statusCode(200)
-                .extract().as(AccountResponse[].class);
-        AccountResponse updatedSender = Arrays.stream(senderAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber))
-                .findFirst().orElseThrow();
-        BigDecimal expectedSender = BigDecimal.valueOf(amount);
-        assertThat(updatedSender.getBalance()).isEqualByComparingTo(expectedSender);
+        String senderAccountNumber = senderAccount.getAccountNumber();
+        String recipientAccountNumber = recipientAccount.getAccountNumber();
 
-        AccountResponse[] recipientAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec2)
-                .when().get("customer/accounts")
-                .then().statusCode(200)
-                .extract().as(AccountResponse[].class);
-        AccountResponse updatedRecipient = Arrays.stream(recipientAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber2))
-                .findFirst().orElseThrow();
-        BigDecimal expectedRecipient = BigDecimal.valueOf(amount);
-        assertThat(updatedRecipient.getBalance()).isEqualByComparingTo(expectedRecipient);
+        // 5) API: финальные балансы — у отправителя amount, у получателя amount
+        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                senderAccountNumber
+        );
 
+        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
+                userSpec2,
+                ResponseSpecs.requestReturnsOK(),
+                recipientAccountNumber
+        );
+
+        BigDecimal expected = BigDecimal.valueOf(amount);
+
+        assertThat(updatedSender.getBalance())
+                .isEqualByComparingTo(expected);
+        assertThat(updatedRecipient.getBalance())
+                .isEqualByComparingTo(expected);
     }
 
     @Test
-// Позитивный тест: повторный перевод суммы больше баланса
+// Негативный тест: повторный перевод суммы больше доступного баланса
     void repeatTransferOverBalance() {
-        int amount = 1000;
+        // сумма первого перевода
+        int amount = generateAmountForTwoTransfersWithinDepositLimit();
+        // общий баланс отправителя для двух переводов
+        int initialAmount = amount * 2;
 
-        // 1) пользователи (API)
-        CreateUserRequest user = AdminSteps.createUser();
-        CreateUserRequest user2 = AdminSteps.createUser();
-
-        // 2) авторизация для API
-        var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
-        var userSpec2 = RequestSpecs.authAsUser(user2.getUsername(), user2.getPassword());
-
-        // 3) создание счетов (API)
-        AccountResponse account = AccountSteps.createAccount(userSpec, ResponseSpecs.entityWasCreated());
-        String accountNumber = account.getAccountNumber();
-        AccountResponse account2 = AccountSteps.createAccount(userSpec2, ResponseSpecs.entityWasCreated());
-        String accountNumber2 = account2.getAccountNumber();
-
-        // 4) пополнить баланс отправителя (API)
-        Long accountId = account.getId();
-        var deposit = models.DepositRequest.builder()
-                .id(accountId)
-                .balance(java.math.BigDecimal.valueOf(amount * 2L).setScale(2, java.math.RoundingMode.HALF_UP))
+        // 1) пополнить баланс отправителя (API) на initialAmount
+        DepositRequest deposit = DepositRequest.builder()
+                .id(senderAccount.getId())
+                .balance(BigDecimal.valueOf(initialAmount).setScale(2, RoundingMode.HALF_UP))
                 .build();
-        AccountSteps.deposit(userSpec, ResponseSpecs.requestReturnsOK(), deposit);
 
-        // 5.1 подготовить сумму
-        var amountBD = java.math.BigDecimal.valueOf(amount).setScale(2, java.math.RoundingMode.HALF_UP);
-        // 5.2 собрать запрос перевода
-        var firstTransfer = models.TransferRequest.builder()
-                .senderAccountId(account.getId())
-                .receiverAccountId(account2.getId())
-                .amount(amountBD)
-                .build();
-        // 5.3 выполнить перевод (ожидаем 200 OK)
-        models.TransferResponse firstTransferResp = requests.steps.AccountSteps.transfer(
-                userSpec, specs.ResponseSpecs.requestReturnsOK(), firstTransfer
+        AccountSteps.deposit(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                deposit
         );
 
-        // 5) логин — токен в localStorage
-        String authHeader = new CrudRequester(
-                RequestSpecs.unauthSpec(), Endpoint.LOGIN, ResponseSpecs.requestReturnsOK())
-                .post(LoginUserRequest.builder()
-                        .username(user.getUsername())
-                        .password(user.getPassword())
-                        .build())
-                .extract()
-                .header("Authorization");
-        open("/");
-        executeJavaScript("localStorage.setItem('authToken', arguments[0])", authHeader);
-        open("/transfer");
+        // 1.1 подготовить сумму для первого перевода
+        BigDecimal amountBD = BigDecimal.valueOf(amount)
+                .setScale(2, RoundingMode.HALF_UP);
 
-        // 6) переход на вкладку повторный перевод
-        $$("button").findBy(text("Transfer Again")).shouldBe(visible, enabled).click();
+        // 1.2 собрать запрос первого перевода
+        TransferRequest firstTransfer = TransferRequest.builder()
+                .senderAccountId(senderAccount.getId())
+                .receiverAccountId(recipientAccount.getId())
+                .amount(amountBD)
+                .build();
 
-        // 7) клик "Repeat" по нужной записи
-        String txType = "TRANSFER_OUT";
-        String amtToken = "$" + amount;
-        SelenideElement txItem = $$("li.list-group-item")
-                .filterBy(text(txType))
-                .filterBy(text(amtToken))
-                .first()
-                .shouldBe(visible);
-        txItem.$("button").shouldHave(text("Repeat")).shouldBe(visible, enabled).click();
+        // 1.3 выполнить первый перевод (ожидаем 200 OK)
+        AccountSteps.transfer(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                firstTransfer
+        );
 
-        // 7.1 ОР: открылось модальное окно "Repeat Transfer"
-        SelenideElement modal = $(".modal.show").shouldBe(visible);
-        modal.$(".modal-title").shouldBe(visible).shouldHave(text("Repeat Transfer"));
+        // 2) авторизация в UI через токен
+        authAsUser(user);
 
-        // 8) выбрать счёт в модальном окне
-        SelenideElement accountSelect = modal.$("select.form-control").shouldBe(visible, enabled);
-        String senderId = String.valueOf(account.getId());
-        accountSelect.selectOptionByValue(senderId);
-        accountSelect.$("option:checked").shouldHave(value(senderId)); // ОР: выбран нужный счёт
+        MoneyTransferPage moneyTransferPage = new MoneyTransferPage().open();
 
-        // 9) изменить сумму на больше, чем баланс
-        int newAmount = amount + 10;
-        SelenideElement amountInput = modal.$("input.form-control[type='number']").shouldBe(visible, enabled);
-        amountInput.clear();
-        amountInput.setValue(String.valueOf(newAmount))
-                .shouldHave(value(String.valueOf(newAmount)));
+        // 3) подготовить сумму повторного перевода больше доступного баланса (amount)
+        int overAmount = amount + ThreadLocalRandom.current().nextInt(1, amount + 1);
 
-        // 10) активировать чекбокс
-        modal.$("#confirmCheck").shouldBe(visible, enabled).setSelected(true).shouldBe(checked);
+        // 4) попытка повторного перевода суммы > баланса
+        moneyTransferPage
+                .openRepeatTransferTab()
+                .openRepeatTransferModal(amount)
+                .fillRepeatTransferFormWithNewAmountAndSubmit(
+                        String.valueOf(senderAccount.getId()),
+                        overAmount
+                );
 
-        // 11) нажать "Send Transfer"
-        modal.$("button.btn-success").shouldBe(visible, enabled).shouldHave(text("Send Transfer")).click();
-
-        // 12) ОР: появился alert
+        // 5) ОР: появился alert об ошибке
         Alert alert = switchTo().alert();
         String alertText = alert.getText();
         assertThat(alertText)
-                .contains("Transfer failed: Please try again");
+                .contains(BankAlert.TRANSFER_FAILED_RETRY.getMessage());
         alert.accept();
 
-        // 13) API: финальные балансы
-        AccountResponse[] senderAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec)
-                .when().get("customer/accounts")
-                .then().statusCode(200)
-                .extract().as(AccountResponse[].class);
-        AccountResponse updatedSender = Arrays.stream(senderAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber))
-                .findFirst().orElseThrow();
-        BigDecimal expectedSender = BigDecimal.valueOf(amount);
-        assertThat(updatedSender.getBalance()).isEqualByComparingTo(expectedSender);
+        String senderAccountNumber = senderAccount.getAccountNumber();
+        String recipientAccountNumber = recipientAccount.getAccountNumber();
 
-        AccountResponse[] recipientAccounts = io.restassured.RestAssured.given()
-                .spec(userSpec2)
-                .when().get("customer/accounts")
-                .then().statusCode(200)
-                .extract().as(AccountResponse[].class);
-        AccountResponse updatedRecipient = Arrays.stream(recipientAccounts)
-                .filter(a -> a.getAccountNumber().equals(accountNumber2))
-                .findFirst().orElseThrow();
-        BigDecimal expectedRecipient = BigDecimal.valueOf(amount);
-        assertThat(updatedRecipient.getBalance()).isEqualByComparingTo(expectedRecipient);
+        // 6) API: финальные балансы — у отправителя amount, у получателя amount
+        AccountResponse updatedSender = AccountSteps.getAccountByNumber(
+                userSpec,
+                ResponseSpecs.requestReturnsOK(),
+                senderAccountNumber
+        );
 
+        AccountResponse updatedRecipient = AccountSteps.getAccountByNumber(
+                userSpec2,
+                ResponseSpecs.requestReturnsOK(),
+                recipientAccountNumber
+        );
+
+        BigDecimal expected = BigDecimal.valueOf(amount);
+
+        assertThat(updatedSender.getBalance())
+                .isEqualByComparingTo(expected);
+        assertThat(updatedRecipient.getBalance())
+                .isEqualByComparingTo(expected);
     }
 
 }
