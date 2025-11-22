@@ -246,8 +246,14 @@ public class MoneyTransferTest extends BaseTest {
         if (raw instanceof Map<?, ?> m) {
             Map<String, Object> b = new HashMap<>();
             m.forEach((k, v) -> b.put(String.valueOf(k), v));
-            if (b.containsKey("senderAccountId")) b.put("senderAccountId", senderAccountId);
-            if (b.containsKey("receiverAccountId")) b.put("receiverAccountId", receiverAccountId);
+
+            if (b.containsKey("senderAccountId") && b.get("senderAccountId") != null) {
+                b.put("senderAccountId", senderAccountId);
+            }
+            if (b.containsKey("receiverAccountId") && b.get("receiverAccountId") != null) {
+                b.put("receiverAccountId", receiverAccountId);
+            }
+
             body = b;
         }
 
