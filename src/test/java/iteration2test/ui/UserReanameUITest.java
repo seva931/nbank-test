@@ -30,22 +30,10 @@ public class UserReanameUITest extends BaseUiTest {
         return RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
     }
 
-    private EditProfilePage openEditProfilePage() {
-        return new EditProfilePage().open();
-    }
-
     private String getProfileName() {
         return ProfileSteps
                 .getProfile(getUserSpec(), ResponseSpecs.requestReturnsOK())
                 .getName();
-    }
-
-    private void assertProfileNameEquals(String expectedName) {
-        assertThat(getProfileName()).isEqualTo(expectedName);
-    }
-
-    private void assertProfileNameIsNull() {
-        assertThat(getProfileName()).isNull();
     }
 
     private void updateProfileNameViaApi(String name) {
@@ -61,11 +49,12 @@ public class UserReanameUITest extends BaseUiTest {
     void setNameFirstTime() {
         String expectedName = generateValidFullName();
 
-        openEditProfilePage()
+        new EditProfilePage()
+                .open()
                 .edit(expectedName)
                 .checkAlertMessageAndAccept(BankAlert.PROFILE_UPDATED_SUCCESSFULLY.getMessage());
 
-        assertProfileNameEquals(expectedName);
+        assertThat(getProfileName()).isEqualTo(expectedName);
     }
 
     @Test
@@ -83,11 +72,12 @@ public class UserReanameUITest extends BaseUiTest {
 
         updateProfileNameViaApi(firstName);
 
-        openEditProfilePage()
+        new EditProfilePage()
+                .open()
                 .edit(secondName)
                 .checkAlertMessageAndAccept(BankAlert.PROFILE_UPDATED_SUCCESSFULLY.getMessage());
 
-        assertProfileNameEquals(secondName);
+        assertThat(getProfileName()).isEqualTo(secondName);
     }
 
     @Test
@@ -98,12 +88,12 @@ public class UserReanameUITest extends BaseUiTest {
     void setNameSingleWord() {
         String invalidName = "Jjdjslsd";
 
-        openEditProfilePage()
+        new EditProfilePage()
                 .open()
                 .edit(invalidName)
                 .checkAlertMessageAndAccept(BankAlert.INVALID_NAME_SINGLE_WORD.getMessage());
 
-        assertProfileNameIsNull();
+        assertThat(getProfileName()).isNull();
     }
 
     @ParameterizedTest
@@ -114,11 +104,12 @@ public class UserReanameUITest extends BaseUiTest {
         // Негативный тест: пустая строка и только пробелы
     void setNameEmptyOrSpaces(String invalidName) {
 
-        openEditProfilePage()
+        new EditProfilePage()
+                .open()
                 .edit(invalidName)
                 .checkAlertMessageAndAccept(BankAlert.INVALID_NAME_GENERIC.getMessage());
 
-        assertProfileNameIsNull();
+        assertThat(getProfileName()).isNull();
     }
 
     @Test
@@ -131,11 +122,12 @@ public class UserReanameUITest extends BaseUiTest {
 
         updateProfileNameViaApi(currentName);
 
-        openEditProfilePage()
+        new EditProfilePage()
+                .open()
                 .edit(currentName)
                 .checkAlertMessageAndAccept(BankAlert.NAME_SAME_AS_CURRENT.getMessage());
 
-        assertProfileNameEquals(currentName);
+        assertThat(getProfileName()).isEqualTo(currentName);
     }
 
     @Test
@@ -149,10 +141,11 @@ public class UserReanameUITest extends BaseUiTest {
 
         updateProfileNameViaApi(firstName);
 
-        openEditProfilePage()
+        new EditProfilePage()
+                .open()
                 .edit(invalidName)
                 .checkAlertMessageAndAccept(BankAlert.INVALID_NAME_GENERIC.getMessage());
 
-        assertProfileNameEquals(firstName);
+        assertThat(getProfileName()).isEqualTo(firstName);
     }
 }
