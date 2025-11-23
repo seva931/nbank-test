@@ -7,7 +7,7 @@ import java.util.List;
 
 public class SessionStorage {
 
-    private static final SessionStorage INSTANCE = new SessionStorage();
+    private static final ThreadLocal <SessionStorage> INSTANCE = ThreadLocal.withInitial(SessionStorage :: new);
 
     // просто список созданных пользователей в порядке добавления
     private final List<CreateUserRequest> users = new ArrayList<>();
@@ -17,12 +17,12 @@ public class SessionStorage {
 
     // Добавляем список пользователей в стор
     public static void addUsers(List<CreateUserRequest> users) {
-        INSTANCE.users.addAll(users);
+        INSTANCE.get().users.addAll(users);
     }
 
     // Возвращаем пользователя по порядковому номеру (нумерация с 1)
     public static CreateUserRequest getUser(int number) {
-        return INSTANCE.users.get(number - 1);
+        return INSTANCE.get().users.get(number - 1);
     }
 
     // Удобный хелпер: первый пользователь
@@ -32,6 +32,6 @@ public class SessionStorage {
 
     // Очистка сессии
     public static void clear() {
-        INSTANCE.users.clear();
+        INSTANCE.get().users.clear();
     }
 }
