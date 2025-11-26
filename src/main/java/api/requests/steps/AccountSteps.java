@@ -6,6 +6,8 @@ import api.models.TransferRequest;
 import api.models.TransferResponse;
 import api.requests.skelethon.Endpoint;
 import api.requests.skelethon.requester.ValidatedCrudRequester;
+import api.specs.ResponseSpecs;
+import common.storage.TestDataRegistry;
 import io.restassured.specification.RequestSpecification;
 import io.restassured.specification.ResponseSpecification;
 
@@ -35,9 +37,12 @@ public class AccountSteps {
 
     public static AccountResponse createAccount(RequestSpecification reqSpec,
                                                 ResponseSpecification respSpec) {
-        return new ValidatedCrudRequester<AccountResponse>(
+        AccountResponse account = new ValidatedCrudRequester<AccountResponse>(
                 reqSpec, Endpoint.ACCOUNTS, respSpec
         ).post(null);
+
+        TestDataRegistry.registerAccount(reqSpec, account);
+        return account;
     }
 
     public static AccountResponse getAccountByNumber(RequestSpecification reqSpec,
@@ -56,5 +61,23 @@ public class AccountSteps {
                 .filter(a -> a.getAccountNumber().equals(accountNumber))
                 .findFirst()
                 .orElseThrow();
+    }
+
+    public static void deleteAccount(RequestSpecification reqSpec,
+                                     long accountId) {
+        deleteAccountResource(reqSpec, Endpoint.ACCOUNTS.getUrl() + "/{accountId}", accountId);
+    }
+
+    // --- private ---
+
+    private static void deleteAccountResource(RequestSpecification reqSpec,
+                                              String urlTemplate,
+                                              long accountId) {
+        given()
+                .spec(reqSpec)
+                .when()
+                .delete(urlTemplate, accountId)
+                .then()
+                .spec(ResponseSpecs.requestReturnsOK());
     }
 }
