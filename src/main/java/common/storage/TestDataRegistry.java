@@ -11,12 +11,17 @@ import java.util.List;
 
 public class TestDataRegistry {
 
-    private static final TestDataRegistry INSTANCE = new TestDataRegistry();
+    private static final ThreadLocal<TestDataRegistry> INSTANCE =
+            ThreadLocal.withInitial(TestDataRegistry::new);
 
     private final List<CreateUserResponse> users = new ArrayList<>();
     private final List<AccountEntry> accounts = new ArrayList<>();
 
     private TestDataRegistry() {
+    }
+
+    private static TestDataRegistry getInstance() {
+        return INSTANCE.get();
     }
 
     private static class AccountEntry {
@@ -35,20 +40,21 @@ public class TestDataRegistry {
         if (userResponse == null) {
             return;
         }
-        INSTANCE.users.add(userResponse);
+        getInstance().users.add(userResponse);
     }
 
     public static void registerAccount(RequestSpecification spec, AccountResponse account) {
         if (spec == null || account == null) {
             return;
         }
-        INSTANCE.accounts.add(new AccountEntry(spec, account.getId()));
+        getInstance().accounts.add(new AccountEntry(spec, account.getId()));
     }
 
     public static void cleanup() {
-        INSTANCE.cleanupAccounts();
-        INSTANCE.cleanupUsers();
-        INSTANCE.clear();
+        TestDataRegistry registry = getInstance();
+        registry.cleanupAccounts();
+        registry.cleanupUsers();
+        registry.clear();
     }
 
     // --- внутренние методы ---

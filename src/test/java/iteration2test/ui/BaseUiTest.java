@@ -22,6 +22,7 @@ public class BaseUiTest extends BaseTest {
         Configuration.baseUrl = Config.getProperty("uiBaseUrl");          // Origin = localhost
         Configuration.browser = Config.getProperty("browser");
         Configuration.browserSize = Config.getProperty("browserSize");
+        Configuration.headless = true;
 
         String hostIp = Config.getProperty("uiHostIp");                         // мой IPv4 Wi-Fi
         ChromeOptions chrome = new ChromeOptions()
