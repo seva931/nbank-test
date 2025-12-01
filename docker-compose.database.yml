@@ -1,0 +1,42 @@
+services:
+  backend:
+    image: nobugsme/nbank:with_database
+    container_name: nbank-backend-db
+    ports:
+      - "4111:4111"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/nbank
+      - SPRING_DATASOURCE_USERNAME=postgres
+      - SPRING_DATASOURCE_PASSWORD=postgres
+      - SPRING_DATASOURCE_DRIVER_CLASS_NAME=org.postgresql.Driver
+    depends_on:
+      - postgres
+    networks:
+      - nbank-network
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: nbank-postgres
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRES_DB=nbank
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d:ro
+    networks:
+      - nbank-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d nbank"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  nbank-network:
+    name: nbank-network
+
+volumes:
+  postgres_data:

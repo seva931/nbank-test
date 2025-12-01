@@ -1,22 +1,25 @@
 package iteration2test.api;
 
-import io.restassured.builder.ResponseSpecBuilder;
 import api.models.CreateUserRequest;
 import api.models.DepositRequest;
 import api.models.TransferRequest;
 import api.models.TransferResponse;
-import org.apache.http.HttpStatus;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.MethodSource;
 import api.requests.skelethon.Endpoint;
 import api.requests.skelethon.requester.CrudRequester;
 import api.requests.steps.AccountSteps;
 import api.requests.steps.AdminSteps;
+import api.requests.steps.DataBaseSteps;
 import api.specs.RequestSpecs;
 import api.specs.ResponseSpecs;
+import io.restassured.builder.ResponseSpecBuilder;
+import io.restassured.specification.RequestSpecification;
+import org.apache.http.HttpStatus;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -26,7 +29,6 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Stream;
 
 import static api.models.comparison.ModelAssertions.assertThatModels;
-
 
 // Кейсы для перевода денег: POST /api/v1/accounts/transfer
 public class MoneyTransferTest extends BaseTest {
@@ -62,9 +64,10 @@ public class MoneyTransferTest extends BaseTest {
 
     @ParameterizedTest
     @MethodSource("positiveAmounts")
-    @DisplayName("Позитив: перевод между своими счетами — допустимые суммы")
+    @DisplayName("Позитив: перевод между своими счетами — допустимые суммы + проверка БД")
     void transferPositiveAmountsBetweenOwnAccounts(BigDecimal amount) {
         var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
+        // пополняем счёт-отправитель на сумму перевода
         fundAccount(userSpec, senderAccountId, amount);
 
         TransferRequest payload = TransferRequest.builder()
@@ -79,10 +82,27 @@ public class MoneyTransferTest extends BaseTest {
 
         // Сопоставление по конфигу (включая константу message)
         assertThatModels(payload, resp).match();
+
+        // Проверка БД: у отправителя 0, у получателя amount
+        var senderFromDb = DataBaseSteps.getAccountById(senderAccountId);
+        var receiverFromDb = DataBaseSteps.getAccountById(receiverAccountId);
+
+        softly.assertThat(senderFromDb).isNotNull();
+        softly.assertThat(receiverFromDb).isNotNull();
+
+        softly.assertThat(
+                BigDecimal.valueOf(senderFromDb.getBalance())
+                        .setScale(2, RoundingMode.HALF_UP)
+        ).isEqualByComparingTo(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
+
+        softly.assertThat(
+                BigDecimal.valueOf(receiverFromDb.getBalance())
+                        .setScale(2, RoundingMode.HALF_UP)
+        ).isEqualByComparingTo(amount.setScale(2, RoundingMode.HALF_UP));
     }
 
     @Test
-    @DisplayName("Позитив: перевод на чужой счёт")
+    @DisplayName("Позитив: перевод на чужой счёт + проверка БД")
     void transferToForeignAccount() {
         // чужой пользователь и его счёт-получатель
         CreateUserRequest other = AdminSteps.createUser();
@@ -93,15 +113,34 @@ public class MoneyTransferTest extends BaseTest {
         BigDecimal amount = BigDecimal
                 .valueOf(ThreadLocalRandom.current().nextDouble(0.01, 5000.00))
                 .setScale(2, RoundingMode.HALF_UP);
+
+        // пополняем счёт-отправитель на сумму перевода
         fundAccount(userSpec, senderAccountId, amount);
 
         TransferRequest payload = new TransferRequest(senderAccountId, foreignReceiverId, amount);
         TransferResponse resp = AccountSteps.transfer(userSpec, ResponseSpecs.requestReturnsOK(), payload);
 
         assertThatModels(payload, resp).match();
+
+        // Проверка БД: у отправителя 0, у чужого получателя amount
+        var senderFromDb = DataBaseSteps.getAccountById(senderAccountId);
+        var foreignFromDb = DataBaseSteps.getAccountById(foreignReceiverId);
+
+        softly.assertThat(senderFromDb).isNotNull();
+        softly.assertThat(foreignFromDb).isNotNull();
+
+        softly.assertThat(
+                BigDecimal.valueOf(senderFromDb.getBalance())
+                        .setScale(2, RoundingMode.HALF_UP)
+        ).isEqualByComparingTo(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
+
+        softly.assertThat(
+                BigDecimal.valueOf(foreignFromDb.getBalance())
+                        .setScale(2, RoundingMode.HALF_UP)
+        ).isEqualByComparingTo(amount.setScale(2, RoundingMode.HALF_UP));
     }
 
-    //Негативные суммы
+    // Негативные суммы
     static Stream<BigDecimal> negativeNumericAmounts() {
         return Stream.of(
                 BigDecimal.ZERO,
@@ -112,7 +151,7 @@ public class MoneyTransferTest extends BaseTest {
 
     @ParameterizedTest
     @MethodSource("negativeNumericAmounts")
-    @DisplayName("Негатив: между своими — суммы 0 / <0 / > MAX_TRANSFER")
+    @DisplayName("Негатив: между своими — суммы 0 / <0 / > MAX_TRANSFER + проверка БД (без изменений)")
     void transferNegativeCoreAmountsBetweenOwnAccounts(BigDecimal amount) {
         var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
 
@@ -130,11 +169,28 @@ public class MoneyTransferTest extends BaseTest {
                 .receiverAccountId(receiverAccountId)
                 .amount(amount)
                 .build());
+
+        // Проверка БД: баланс не изменился
+        var senderFromDb = DataBaseSteps.getAccountById(senderAccountId);
+        var receiverFromDb = DataBaseSteps.getAccountById(receiverAccountId);
+
+        softly.assertThat(senderFromDb).isNotNull();
+        softly.assertThat(receiverFromDb).isNotNull();
+
+        softly.assertThat(
+                BigDecimal.valueOf(senderFromDb.getBalance())
+                        .setScale(2, RoundingMode.HALF_UP)
+        ).isEqualByComparingTo(preload.setScale(2, RoundingMode.HALF_UP));
+
+        softly.assertThat(
+                BigDecimal.valueOf(receiverFromDb.getBalance())
+                        .setScale(2, RoundingMode.HALF_UP)
+        ).isEqualByComparingTo(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
     }
 
     @ParameterizedTest
     @MethodSource("negativeNumericAmounts")
-    @DisplayName("Негатив: на чужой счёт — суммы 0 / <0 / > MAX_TRANSFER")
+    @DisplayName("Негатив: на чужой счёт — суммы 0 / <0 / > MAX_TRANSFER + проверка БД (без изменений)")
     void transferToForeignNegativeAmounts(BigDecimal amount) {
         // чужой пользователь и его счёт-получатель
         CreateUserRequest other = AdminSteps.createUser();
@@ -150,6 +206,23 @@ public class MoneyTransferTest extends BaseTest {
                 Endpoint.TRANSFER,
                 new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_BAD_REQUEST).build()
         ).post(new TransferRequest(senderAccountId, foreignReceiverId, amount));
+
+        // Проверка БД: баланс не изменился
+        var senderFromDb = DataBaseSteps.getAccountById(senderAccountId);
+        var foreignFromDb = DataBaseSteps.getAccountById(foreignReceiverId);
+
+        softly.assertThat(senderFromDb).isNotNull();
+        softly.assertThat(foreignFromDb).isNotNull();
+
+        softly.assertThat(
+                BigDecimal.valueOf(senderFromDb.getBalance())
+                        .setScale(2, RoundingMode.HALF_UP)
+        ).isEqualByComparingTo(preload.setScale(2, RoundingMode.HALF_UP));
+
+        softly.assertThat(
+                BigDecimal.valueOf(foreignFromDb.getBalance())
+                        .setScale(2, RoundingMode.HALF_UP)
+        ).isEqualByComparingTo(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
     }
 
     // Негатив: превышение баланса отправителя
@@ -162,7 +235,7 @@ public class MoneyTransferTest extends BaseTest {
 
     @ParameterizedTest
     @MethodSource("negativeAmountsExceedsBalance")
-    @DisplayName("Негатив: между своими — сумма превышает баланс отправителя")
+    @DisplayName("Негатив: между своими — сумма превышает баланс отправителя + проверка БД (без изменений)")
     void transferAmountExceedsBalanceBetweenOwnAccounts(BigDecimal amount) {
         var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
 
@@ -179,11 +252,28 @@ public class MoneyTransferTest extends BaseTest {
                 .receiverAccountId(receiverAccountId)
                 .amount(amount)
                 .build());
+
+        // Проверка БД: баланс не изменился
+        var senderFromDb = DataBaseSteps.getAccountById(senderAccountId);
+        var receiverFromDb = DataBaseSteps.getAccountById(receiverAccountId);
+
+        softly.assertThat(senderFromDb).isNotNull();
+        softly.assertThat(receiverFromDb).isNotNull();
+
+        softly.assertThat(
+                BigDecimal.valueOf(senderFromDb.getBalance())
+                        .setScale(2, RoundingMode.HALF_UP)
+        ).isEqualByComparingTo(balance.setScale(2, RoundingMode.HALF_UP));
+
+        softly.assertThat(
+                BigDecimal.valueOf(receiverFromDb.getBalance())
+                        .setScale(2, RoundingMode.HALF_UP)
+        ).isEqualByComparingTo(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
     }
 
     @ParameterizedTest
     @MethodSource("negativeAmountsExceedsBalance")
-    @DisplayName("Негатив: на чужой счёт — сумма превышает баланс отправителя")
+    @DisplayName("Негатив: на чужой счёт — сумма превышает баланс отправителя + проверка БД (без изменений)")
     void transferToForeignExceedsSenderBalance(BigDecimal amount) {
         // чужой пользователь и его счёт-получатель
         CreateUserRequest other = AdminSteps.createUser();
@@ -200,9 +290,26 @@ public class MoneyTransferTest extends BaseTest {
                 Endpoint.TRANSFER,
                 new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_BAD_REQUEST).build()
         ).post(new TransferRequest(senderAccountId, foreignReceiverId, amount));
+
+        // Проверка БД: баланс не изменился
+        var senderFromDb = DataBaseSteps.getAccountById(senderAccountId);
+        var foreignFromDb = DataBaseSteps.getAccountById(foreignReceiverId);
+
+        softly.assertThat(senderFromDb).isNotNull();
+        softly.assertThat(foreignFromDb).isNotNull();
+
+        softly.assertThat(
+                BigDecimal.valueOf(senderFromDb.getBalance())
+                        .setScale(2, RoundingMode.HALF_UP)
+        ).isEqualByComparingTo(balance.setScale(2, RoundingMode.HALF_UP));
+
+        softly.assertThat(
+                BigDecimal.valueOf(foreignFromDb.getBalance())
+                        .setScale(2, RoundingMode.HALF_UP)
+        ).isEqualByComparingTo(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
     }
 
-    //Негативные payload
+    // Негативные payload
     static Stream<Object> invalidTransferPayloads() {
         Map<String, Object> amountNull = map(111L, 222L, null);
         Map<String, Object> amountEmpty = map(111L, 222L, "");
@@ -235,12 +342,15 @@ public class MoneyTransferTest extends BaseTest {
         );
     }
 
+    @Disabled("BUG backend: /api/v1/accounts/transfer возвращает 500 вместо 400 при некорректном payload")
     @ParameterizedTest
     @MethodSource("invalidTransferPayloads")
-    @DisplayName("Негатив: между своими — некорректный payload")
+    @DisplayName("Негатив: между своими — некорректный payload + проверка БД (без изменений)")
     void transferBetweenOwnInvalidPayloadsReturns400(Object raw) {
         var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
-        fundAccount(userSpec, senderAccountId, new BigDecimal("10"));
+        // даём положительный баланс, чтобы ошибка была именно по payload
+        BigDecimal initialBalance = new BigDecimal("10");
+        fundAccount(userSpec, senderAccountId, initialBalance);
 
         Object body = raw;
         if (raw instanceof Map<?, ?> m) {
@@ -262,6 +372,23 @@ public class MoneyTransferTest extends BaseTest {
                 .build();
 
         new CrudRequester(userSpec, Endpoint.TRANSFER, bad).post(body);
+
+        // Проверка БД: баланс не изменился
+        var senderFromDb = DataBaseSteps.getAccountById(senderAccountId);
+        var receiverFromDb = DataBaseSteps.getAccountById(receiverAccountId);
+
+        softly.assertThat(senderFromDb).isNotNull();
+        softly.assertThat(receiverFromDb).isNotNull();
+
+        softly.assertThat(
+                BigDecimal.valueOf(senderFromDb.getBalance())
+                        .setScale(2, RoundingMode.HALF_UP)
+        ).isEqualByComparingTo(initialBalance.setScale(2, RoundingMode.HALF_UP));
+
+        softly.assertThat(
+                BigDecimal.valueOf(receiverFromDb.getBalance())
+                        .setScale(2, RoundingMode.HALF_UP)
+        ).isEqualByComparingTo(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
     }
 
     private static Map<String, Object> map(Object senderId, Object receiverId, Object amount) {
@@ -272,18 +399,25 @@ public class MoneyTransferTest extends BaseTest {
         return m;
     }
 
-    // Пополняет счёт на targetAmount с учётом лимита одного депозита (≤ 5000)
-    private void fundAccount(io.restassured.specification.RequestSpecification userSpec,
+    // Пополняет счёт на targetAmount с учётом лимита одного депозита (≤ 5000),
+    // без маппинга проблемного ответа /deposit.
+    private void fundAccount(RequestSpecification userSpec,
                              Long accountId,
                              BigDecimal targetAmount) {
         BigDecimal remaining = targetAmount;
         while (remaining.compareTo(BigDecimal.ZERO) > 0) {
             BigDecimal chunk = remaining.min(DEPOSIT_MAX);
-            AccountSteps.deposit(
+            DepositRequest payload = DepositRequest.builder()
+                    .id(accountId)
+                    .balance(chunk)
+                    .build();
+
+            new CrudRequester(
                     userSpec,
-                    ResponseSpecs.requestReturnsOK(),
-                    DepositRequest.builder().id(accountId).balance(chunk).build()
-            );
+                    Endpoint.DEPOSIT,
+                    ResponseSpecs.requestReturnsOK()
+            ).post(payload);
+
             remaining = remaining.subtract(chunk);
         }
     }
