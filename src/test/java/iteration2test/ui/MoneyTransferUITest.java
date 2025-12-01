@@ -61,13 +61,16 @@ public class MoneyTransferUITest extends BaseUiTest {
     }
 
     private void depositToSender(AccountResponse senderAccount, int amount) {
+        BigDecimal amountBD = BigDecimal.valueOf(amount)
+                .setScale(2, RoundingMode.HALF_UP);
+
         DepositRequest deposit = DepositRequest.builder()
-                .id(senderAccount.getId())
-                .balance(BigDecimal.valueOf(amount).setScale(2, RoundingMode.HALF_UP))
+                .accountId(senderAccount.getId())
+                .amount(amountBD)
                 .build();
 
         AccountSteps.deposit(
-                getUserSpec(1),
+                getUserSpec(1),                 // было getUserSpec()
                 ResponseSpecs.requestReturnsOK(),
                 deposit
         );

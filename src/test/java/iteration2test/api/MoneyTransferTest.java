@@ -407,9 +407,10 @@ public class MoneyTransferTest extends BaseTest {
         BigDecimal remaining = targetAmount;
         while (remaining.compareTo(BigDecimal.ZERO) > 0) {
             BigDecimal chunk = remaining.min(DEPOSIT_MAX);
+
             DepositRequest payload = DepositRequest.builder()
-                    .id(accountId)
-                    .balance(chunk)
+                    .accountId(accountId)
+                    .amount(chunk)
                     .build();
 
             new CrudRequester(

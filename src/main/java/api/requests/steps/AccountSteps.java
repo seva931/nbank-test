@@ -34,6 +34,15 @@ public class AccountSteps {
                 reqSpec, Endpoint.TRANSFER, respSpec
         ).post(payload);
     }
+    public static TransferResponse transferWithFraudCheck(RequestSpecification reqSpec,
+                                                          ResponseSpecification respSpec,
+                                                          TransferRequest payload) {
+        return new ValidatedCrudRequester<TransferResponse>(
+                reqSpec,
+                Endpoint.TRANSFER_WITH_FRAUD_CHECK,
+                respSpec
+        ).post(payload);
+    }
 
     public static AccountResponse createAccount(RequestSpecification reqSpec,
                                                 ResponseSpecification respSpec) {

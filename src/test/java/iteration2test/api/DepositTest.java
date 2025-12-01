@@ -73,8 +73,8 @@ public class DepositTest extends BaseTest {
         var userSpec = RequestSpecs.authAsUser(user.getUsername(), user.getPassword());
 
         DepositRequest payload = DepositRequest.builder()
-                .id(accountId)
-                .balance(amount)
+                .accountId(accountId)
+                .amount(amount)
                 .build();
 
         AccountResponse resp = AccountSteps.deposit(
@@ -83,7 +83,7 @@ public class DepositTest extends BaseTest {
                 payload
         );
 
-        // Сопоставление по конфигу (id -> id, balance -> balance)
+        // Сопоставление по конфигу (accountId -> id, amount -> balance)
         assertThatModels(payload, resp).match();
 
         // Проверка состояния счёта в БД
@@ -113,8 +113,8 @@ public class DepositTest extends BaseTest {
                 .setScale(2, RoundingMode.HALF_UP);
 
         DepositRequest payload = DepositRequest.builder()
-                .id(secondAccountId)
-                .balance(amount)
+                .accountId(secondAccountId)
+                .amount(amount)
                 .build();
 
         AccountResponse resp = AccountSteps.deposit(
@@ -163,8 +163,8 @@ public class DepositTest extends BaseTest {
                 .setScale(2, RoundingMode.HALF_UP);
 
         DepositRequest payload1 = DepositRequest.builder()
-                .id(firstAccountId)
-                .balance(amount1)
+                .accountId(firstAccountId)
+                .amount(amount1)
                 .build();
         AccountResponse r1 = AccountSteps.deposit(
                 userSpec, ResponseSpecs.requestReturnsOK(), payload1
@@ -172,8 +172,8 @@ public class DepositTest extends BaseTest {
         assertThatModels(payload1, r1).match();
 
         DepositRequest payload2 = DepositRequest.builder()
-                .id(secondAccountId)
-                .balance(amount2)
+                .accountId(secondAccountId)
+                .amount(amount2)
                 .build();
         AccountResponse r2 = AccountSteps.deposit(
                 userSpec, ResponseSpecs.requestReturnsOK(), payload2
@@ -217,7 +217,12 @@ public class DepositTest extends BaseTest {
                 userSpec,
                 Endpoint.DEPOSIT,
                 new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_BAD_REQUEST).build()
-        ).post(DepositRequest.builder().id(accountId).balance(badAmount).build());
+        ).post(
+                DepositRequest.builder()
+                        .accountId(accountId)
+                        .amount(badAmount)
+                        .build()
+        );
 
         // Проверка: баланс счёта в БД не изменился
         var accountFromDb = DataBaseSteps.getAccountById(accountId);
@@ -280,6 +285,7 @@ public class DepositTest extends BaseTest {
                 emptyRaw, jsonNull, emptyObj
         );
     }
+
     @Disabled("BUG backend: /api/v1/accounts/deposit возвращает 500 вместо 400 при некорректном payload")
     @ParameterizedTest
     @MethodSource("invalidPayloads")
@@ -322,7 +328,12 @@ public class DepositTest extends BaseTest {
                 userSpec,
                 Endpoint.DEPOSIT,
                 new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_FORBIDDEN).build()
-        ).post(DepositRequest.builder().id(foreignAccountId).balance(new BigDecimal("10")).build());
+        ).post(
+                DepositRequest.builder()
+                        .accountId(foreignAccountId)
+                        .amount(new BigDecimal("10"))
+                        .build()
+        );
 
         // Проверка: баланс чужого счёта не изменился
         var foreignFromDb = DataBaseSteps.getAccountById(foreignAccountId);
@@ -343,7 +354,12 @@ public class DepositTest extends BaseTest {
                 userSpec,
                 Endpoint.DEPOSIT,
                 new ResponseSpecBuilder().expectStatusCode(HttpStatus.SC_FORBIDDEN).build()
-        ).post(DepositRequest.builder().id(nonexistentId).balance(new BigDecimal("10")).build());
+        ).post(
+                DepositRequest.builder()
+                        .accountId(nonexistentId)
+                        .amount(new BigDecimal("10"))
+                        .build()
+        );
 
         // Проверка: баланс существующего счёта пользователя не изменился
         var accountFromDb = DataBaseSteps.getAccountById(accountId);
