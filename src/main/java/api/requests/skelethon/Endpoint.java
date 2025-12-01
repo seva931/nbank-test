@@ -28,6 +28,11 @@ public enum Endpoint {
             TransferRequest.class,
             TransferResponse.class
     ),
+    TRANSFER_WITH_FRAUD_CHECK(
+            "/accounts/transfer-with-fraud-check",
+            TransferRequest.class,
+            TransferResponse.class
+    ),
     PROFILE_UPDATE(
             "/customer/profile",
             UpdateProfileRequest.class,

@@ -8,11 +8,10 @@ import lombok.NoArgsConstructor;
 import java.math.BigDecimal;
 
 @Data
-@AllArgsConstructor
 @NoArgsConstructor
+@AllArgsConstructor
 @Builder
 public class DepositRequest extends BaseModel {
-    private Long id;
-    private BigDecimal balance;
-
+    private Long accountId;
+    private BigDecimal amount;
 }
